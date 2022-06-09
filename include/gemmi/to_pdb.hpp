@@ -21,6 +21,7 @@ struct PdbWriteOptions {
   bool numbered_ter = true;
   bool ter_ignores_type = false;
   bool use_linkr = false;
+  bool conect_records = false;
 };
 
 void write_pdb(const Structure& st, std::ostream& os,
@@ -319,6 +320,9 @@ inline void write_chain_atoms(const Chain& chain, std::ostream& os,
             // Sometimes PDB files have explicit 0s (5M05); we ignore them.
             a.charge ? a.charge > 0 ? '0'+a.charge : '0'-a.charge : ' ',
             a.charge ? a.charge > 0 ? '+' : '-' : ' ');
+      //Record serial
+      int* p=(int*)&a.serial;
+      *p=serial;
       if (a.aniso.nonzero()) {
         // re-using part of the buffer
         std::memcpy(buf, "ANISOU", 6);
@@ -370,6 +374,50 @@ inline void write_atoms(const Structure& st, std::ostream& os,
     }
     for (const Chain& chain : model.chains)
       write_chain_atoms(chain, os, serial, opt);
+    //CONECT's
+    // CONECT  (note: grouped per model)
+    if (opt.conect_records) {
+      std::vector<int> uniqueSerials;
+      std::unordered_multimap<int, int> serial1Map;
+      std::unordered_multimap<int, int> serial2Map;
+      for (const Model& model : st.models)
+        for (const Connection& con : st.connections)
+          if (con.type == Connection::Conect) {
+          const_CRA cra1 = model.find_cra(con.partner1, true);
+          const_CRA cra2 = model.find_cra(con.partner2, true);
+          // In special cases (LINKR gap) atoms are not there.
+          if (!cra1.residue || !cra2.residue)
+            continue;
+          if(std::find(uniqueSerials.begin(), uniqueSerials.end(), cra1.atom->serial) == uniqueSerials.end())uniqueSerials.push_back(cra1.atom->serial);
+          if(std::find(uniqueSerials.begin(), uniqueSerials.end(), cra2.atom->serial) == uniqueSerials.end())uniqueSerials.push_back(cra2.atom->serial);
+          serial1Map.insert(std::make_pair(cra1.atom->serial, cra2.atom->serial));
+          serial2Map.insert(std::make_pair(cra2.atom->serial, cra1.atom->serial));
+        }
+      for(int s : uniqueSerials){
+        if(serial1Map.count(s)>0 && serial1Map.bucket_count()>0){
+          unsigned int bucket=serial1Map.bucket(s);
+          gf_snprintf(buf, 82, "CONECT%5d",s);
+          size_t offset=11;
+          for(std::unordered_multimap<int, int>::local_iterator bucketIt=serial1Map.begin(bucket);bucketIt!=serial1Map.end(bucket);bucketIt++){
+            gf_snprintf(buf+offset, 82-offset, "%5d",(*bucketIt).second);
+            offset+=5;
+          }
+          gf_snprintf(buf+offset, 82-offset, "\n");
+          os<<buf;
+        }
+        if(serial2Map.count(s)>0 && serial2Map.bucket_count()>0){
+          unsigned int bucket=serial2Map.bucket(s);
+          gf_snprintf(buf, 82, "CONECT%5d",s);
+          size_t offset=11;
+          for(std::unordered_multimap<int, int>::local_iterator bucketIt=serial2Map.begin(bucket);bucketIt!=serial2Map.end(bucket);bucketIt++){
+            gf_snprintf(buf+offset, 82-offset, "%5d",(*bucketIt).second);
+            offset+=5;
+          }
+          gf_snprintf(buf+offset, 82-offset, "\n");
+          os<<buf;
+        }
+      }
+    }
     if (st.models.size() > 1)
       WRITE("%-80s", "ENDMDL");
   }
