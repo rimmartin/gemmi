@@ -414,6 +414,7 @@ to positions in the grid:
 (If your points are not on a regular grid -- get in touch -- there might be
 another way.)
 
+.. _masked_grid:
 
 ASU and MaskedGrid
 ------------------
@@ -438,7 +439,7 @@ The primary use for MaskedGrid is working with asymmetric unit (asu) only:
   >>> asu.mask_array  # doctest: +ELLIPSIS
   array([[[0, 0, 0, ..., 1, 1, 1],
          ...
-          [1, 1, 1, ..., 1, 1, 1]]], dtype=int8)
+          [1, 0, 0, ..., 1, 1, 1]]], dtype=int8)
   >>> sum(point.value for point in asu)
   7.125
   >>> for point in asu:
@@ -591,18 +592,32 @@ using peak_pos as the seed:
 .. doctest::
 
   >>> seed = blobs[0].peak_pos
-  >>> gemmi.flood_fill_above(grid, [seed], threshold=0.6)
+  >>> mask = gemmi.flood_fill_above(grid, [seed], threshold=0.6)
+  >>> mask
   <gemmi.Int8Grid(90, 8, 30)>
-  >>> _.sum()  # == number of masked points
-  62
-  >>> _ * grid.unit_cell.volume / grid.point_count  # cf. blobs[0].volume
-  9.967250538023837
+
 
 The second argument of flood_fill_above() is a list of positions used as seeds.
 We could use multiple seeds to obtain a single mask for all blobs together.
 
 To find area with values below a certain value,
 run flood_fill_above() with optional argument ``negate=True``.
+
+Here are a few characteristics of the mask that we can easily show:
+
+.. doctest::
+
+  >>> mask.sum()  # == number of masked points
+  62
+  >>> _ * grid.unit_cell.volume / grid.point_count  # cf. blobs[0].volume
+  9.967250538023837
+  >>> extent = mask.get_nonzero_extent()  # bounding box containing the blob
+  >>> extent.minimum  # in fractional coordinates
+  <gemmi.Fractional(0.227778, -0.0625, -0.0833333)>
+  >>> grid.unit_cell.orthogonalize(extent.minimum)
+  <gemmi.Position(11.7177, -0.298563, -1.20317)>
+  >>> grid.unit_cell.orthogonalize(extent.maximum)
+  <gemmi.Position(13.4558, 4.47844, 1.20317)>
 
 MRC/CCP4 maps
 =============
@@ -631,12 +646,12 @@ The file can contain only a part of the asymmetric unit,
 or more than an asymmetric unit (i.e. redundant data).
 There are two typical approaches to generate a crystallographic map:
 
-* old-school way: covering a molecule with some margin around it;
-  CCP4 utilities ``fft`` and ``mapmask`` make such a map,
-* or covering the asymmetric unit (asu); the program that reads
+* Covering a molecule with some margin around it.
+  This is necessary for programs such as PyMOL that don't know about symmetry.
+  CCP4 utilities ``fft`` + ``mapmask`` can make such a map.
+* Covering the asymmetric unit (asu). The program that reads
   the map is supposed to expand the symmetry. This approach is used by
-  the CCP4 clipper library and by programs that use this library,
-  such as ``cfft`` and Coot.
+  the CCP4 clipper library and by programs such as Coot.
 
 The latter approach generates map for exactly one asu, if possible.
 It is not possible if the shape of the asu in fractional coordinates
@@ -744,9 +759,6 @@ When the file is read, the header is used to set properties of the grid:
     >>> m.grid.unit_cell
     <gemmi.UnitCell(29.45, 10.5, 29.7, 90, 111.975, 90)>
 
-If the grid changes, you may update the map header by calling
-``update_ccp4_header()``.
-
 
 setup()
 -------
@@ -769,18 +781,14 @@ It is used only when the input file does not cover a complete asymmetric unit.
 When you call a read function with setup=True,
 this argument is NaN for maps and -1 for masks.
 
-The second argument is optional and can be used to perform
-a partial setup only.
+The second argument (mode) is optional and can be used to perform
+a partial setup.
 
 * MapSetup.Full -- (default value) reorders and resizes the grid to cover
   the whole unit cell, applying symmetry.
 * MapSetup.NoSymmetry -- does not use symmetry operations, only
   cell repeat (periodic boundary conditions, PBC) when extending the map.
 * MapSetup.ReorderOnly -- only reorders axes to X, Y, Z.
-
-The setup function in the default mode checks the consistency of the data.
-If the data is redundant, the returned value is the biggest difference between
-equivalent points. In all other cases, it returns 0.
 
 **C++**
 
@@ -793,47 +801,67 @@ equivalent points. In all other cases, it returns 0.
 .. doctest::
 
     >>> m.setup(float('nan'))
-    0.0
     >>> # the grid dimensions were 8x6x10, now they are:
     >>> m.grid
     <gemmi.FloatGrid(60, 24, 60)>
 
+Non-default modes are only for special occasions.
+For example, if we had a suspicious file and wanted to check if the map
+values obey the symmetry specified in the file, we could do this:
+
+.. doctest::
+  :skipif: numpy is None
+
+    >>> m = gemmi.read_ccp4_map('../tests/5i55_tiny.ccp4')
+    >>> m.setup(float('nan'), mode=gemmi.MapSetup.NoSymmetry)
+    >>> grid_copy = m.grid.clone()
+    >>> # use two grids to store min and max values of symmetry mates
+    >>> m.grid.symmetrize_min()
+    >>> grid_copy.symmetrize_max()
+    >>> # find the biggest difference between symmetry-related points
+    >>> numpy.nanmax(grid_copy.array - m.grid.array)
+    0.0
+
 Writing
 -------
 
-To write a map to a file, update the header if necessary and
-call ``write_ccp4_map()``.
-
-**C++**
+To write a map to a file, update the header if necessary,
+(optionally) set the extent of the map that is to be written,
+and call ``write_ccp4_map()``.
 
 ::
 
-    // the file header needs to be prepared/updated with an explicit call
-    int mode = 2; // ccp4 file mode: 2 for floating-point data, 0 for masks
-    bool update_stats = true; // update min/max/mean/rms values in the header
-    map.update_ccp4_header(mode, update_stats);
-
+    map.update_ccp4_header();
+    // map.set_extent(...);
     map.write_ccp4_map(filename);
-
-**Python**
 
 .. doctest::
 
     >>> m.update_ccp4_header()
+    >>> # m.set_extent(...)
     >>> m.write_ccp4_map('out.ccp4')
 
-By default, the map written to a file covers the whole unit cell.
-To cover only a given box, call ``set_extent()`` before writing the map.
+update_ccp4_header() does the following:
+
+- if the map header is empty (a new map was created):
+  it prepares the header,
+- if the optional argument ``mode`` is given and if it is different than
+  the current mode: the mode is changed and the data type will be
+  converted while writing the file; the mode can be 0, 1, 2, 6, or
+  -1 (default -- no action),
+- if the optional argument ``update_stats`` is true (the default is true):
+  DMIN, DMAX, DMEAN and RMS in the map header are re-calculated.
+
+.. _set_extent:
+
+By default, the written map covers the whole unit cell.
+To change this, call ``set_extent()`` before writing the map.
 As an example, let us cover a molecule with 5Å margin
 (equivalent of running CCP4 program MAPMASK with XYZIN and BORDER 5).
-
-**C++**
 
 ::
 
     map.set_extent(calculate_fractional_box(structure, 5));
-
-**Python**
 
 .. doctest::
 
@@ -845,18 +873,41 @@ As an example, let us cover a molecule with 5Å margin
 After calling ``set_extent()`` we have the same situation as before calling
 ``setup()`` -- some grid functions may not work correctly.
 
-The current extent of the map can be read using function ``get_extent()``.
-To write a map that covers the same area as the original map, do:
+Here we show three other scenarios of setting the map extent.
+
+You may want to preserve the original map extent, which can be
+read by calling ``get_extent()`` before the setup:
 
 .. doctest::
 
     >>> m = gemmi.read_ccp4_map('../tests/5i55_tiny.ccp4')
     >>> box = m.get_extent()
     >>> m.setup(float('nan'))
-    0.0
     >>> # ... here the map gets modified ...
     >>> m.set_extent(box)
     >>> m.write_ccp4_map('out.ccp4')
+
+Alternatively, you may want to write only an asymmetric unit
+(actually, :ref:`asu brick <asu_brick>`) of the map,
+which is enough to calculate the density everywhere.
+For this, use the brick extent:
+
+.. doctest::
+
+  >>> brick = gemmi.find_asu_brick(m.grid.spacegroup)
+  >>> brick.str()
+  '0<=x<=1/2; 0<=y<1; 0<=z<1'
+  >>> box = brick.get_extent()
+
+At last, if the map would be padded with zeros or NaNs you could determine
+the box that contains real data with ``get_nonzero_extent()``:
+
+.. doctest::
+
+    >>> m = gemmi.read_ccp4_map('../tests/5i55_tiny.ccp4')
+    >>> m.setup(0., gemmi.MapSetup.NoSymmetry)
+    >>> m.grid.get_nonzero_extent()  #doctest: +ELLIPSIS
+    <gemmi.FractionalBox object at 0x...>
 
 
 Map from Grid
@@ -866,6 +917,7 @@ To write grid data as a ccp4 file: create a new Ccp4 class,
 set the grid, call ``update_ccp4_header()`` and write the file.
 
 .. doctest::
+  :skipif: numpy is None
 
   >>> ccp4 = gemmi.Ccp4Map()
   >>> ccp4.grid = gemmi.FloatGrid(numpy.zeros((10, 10, 10), dtype=numpy.float32))

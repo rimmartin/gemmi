@@ -159,8 +159,11 @@ void add_cif(py::module& cif) {
     .def("__getitem__", [](Block& self, int index) -> Item& {
         return self.items[normalize_index(index, self.items)];
     }, py::arg("index"), py::return_value_policy::reference_internal)
-    .def("find_pair", &Block::find_pair, py::arg("tag"),
-         py::return_value_policy::reference_internal)
+    .def("find_pair", [](const Block& self, const std::string& tag) -> py::object {
+        if (const Pair* p = self.find_pair(tag))
+          return py::make_tuple((*p)[0], (*p)[1]);
+        return py::none();
+     }, py::arg("tag"))
     .def("find_pair_item", &Block::find_pair_item, py::arg("tag"),
          py::return_value_policy::reference_internal)
     .def("find_value", &Block::find_value, py::arg("tag"),
@@ -188,6 +191,15 @@ void add_cif(py::module& cif) {
     .def("item_as_table", &Block::item_as_table)
     .def("get_index", &Block::get_index, py::arg("tag"))
     .def("set_pair", &Block::set_pair, py::arg("tag"), py::arg("value"))
+    .def("set_pairs",
+         [](Block &self, std::string prefix, py::dict data, bool raw) {
+           ItemSpan span(self.items, prefix);
+           for (auto item : data) {
+             std::string key = py::str(item.first);
+             std::string value = pyobject_to_string(item.second, raw);
+             span.set_pair(prefix + key, value);
+           }
+         }, py::arg("prefix"), py::arg("data"), py::arg("raw")=false)
     .def("init_loop", &Block::init_loop, py::arg("prefix"), py::arg("tags"),
          py::return_value_policy::reference_internal)
     .def("move_item", &Block::move_item, py::arg("old_pos"), py::arg("new_pos"))
@@ -212,10 +224,8 @@ void add_cif(py::module& cif) {
              if (values.back().size() != values[0].size())
                throw py::value_error("all columns must have equal length");
            }
-           if (w == 0 || values[0].size() == 0)
-             throw py::value_error("data cannot be empty");
            Loop& loop = self.init_mmcif_loop(std::move(name), std::move(tags));
-           loop.values.resize(w * values[0].size());
+           loop.values.resize(w != 0 ? w * values[0].size() : 0);
            for (size_t col = 0; col != w; ++col) {
              size_t idx = col;
              for (auto handle : values[col]) {
@@ -268,9 +278,11 @@ void add_cif(py::module& cif) {
   cif_item
     .def("erase", &Item::erase)
     .def_readonly("line_number", &Item::line_number)
-    .def_property_readonly("pair", [](Item& self) {
-        return self.type == ItemType::Pair ? &self.pair : nullptr;
-    }, py::return_value_policy::reference_internal)
+    .def_property_readonly("pair", [](Item& self) -> py::object {
+        if (self.type == ItemType::Pair)
+          return py::make_tuple(self.pair[0], self.pair[1]);
+        return py::none();
+    })
     .def_property_readonly("loop", [](Item& self) {
         return self.type == ItemType::Loop ? &self.loop : nullptr;
     }, py::return_value_policy::reference_internal)

@@ -9,6 +9,7 @@
 #include <vector>
 #include "model.hpp"
 #include "resinfo.hpp"   // for find_tabulated_residue
+#include "calculate.hpp" // for calculate_omega
 #include "util.hpp"      // for vector_remove_if
 
 namespace gemmi {
@@ -104,12 +105,15 @@ inline std::vector<AtomNameElement> get_mainchain_atoms(PolymerType ptype) {
   return {{"N", El::N}, {"CA", El::C}, {"C", El::C}, {"O", El::O}};
 }
 
+inline bool have_peptide_bond(const Residue& r1, const Residue& r2) {
+  const Atom* a1 = r1.get_c();
+  const Atom* a2 = r2.get_n();
+  return a1 && a2 && a1->pos.dist_sq(a2->pos) < sq(1.341 * 1.5);
+}
+
 inline bool are_connected(const Residue& r1, const Residue& r2, PolymerType ptype) {
-  if (is_polypeptide(ptype)) {
-    const Atom* a1 = r1.get_c();
-    const Atom* a2 = r2.get_n();
-    return a1 && a2 && a1->pos.dist_sq(a2->pos) < sq(1.341 * 1.5);
-  }
+  if (is_polypeptide(ptype))
+    return have_peptide_bond(r1, r2);
   if (is_polynucleotide(ptype)) {
     const Atom* a1 = r1.get_o3prim();
     const Atom* a2 = r2.get_p();
@@ -278,11 +282,28 @@ inline void deduplicate_entities(Structure& st) {
 }
 
 inline void setup_entities(Structure& st) {
-  assign_subchains(st, false);
+  assign_subchains(st, /*force=*/false);
   ensure_entities(st);
   deduplicate_entities(st);
 }
 
+
+/// Assign Residue::is_cis based on omega angle
+template<class T> void assign_cis_flags(T& obj) {
+  for (auto& child : obj.children())
+    assign_cis_flags(child);
+}
+inline void assign_cis_flags(Chain& chain) {
+  for (Residue& res : chain.residues) {
+    bool cis = false;
+    if (res.entity_type == EntityType::Polymer)
+      if (const Residue* next = chain.next_residue(res))
+        if (have_peptide_bond(res, *next))
+          if (std::fabs(calculate_omega(res, *next)) < rad(30.))
+            cis = true;
+    res.is_cis = cis;
+  }
+}
 
 // Remove waters. It may leave empty chains.
 template<class T> void remove_waters(T& obj) {

@@ -12,6 +12,8 @@
 #include "to_mmcif.hpp"  // for write_struct_conn
 #include "sprintf.hpp"   // for to_str, to_str_prec
 #include "calculate.hpp" // for find_best_plane
+#include "select.hpp"    // for count_atom_sites
+#include "to_chemcomp.hpp" // for add_chemcomp_to_block
 
 namespace gemmi {
 
@@ -46,7 +48,8 @@ inline std::string get_ccp4_mod_id(const std::vector<std::string>& mods) {
   return ".";
 }
 
-inline cif::Block prepare_crd(const Structure& st, const Topo& topo) {
+inline cif::Block prepare_crd(const Structure& st, const Topo& topo,
+                              HydrogenChange h_change) {
   auto e_id = st.info.find("_entry.id");
   std::string id = cif::quote(e_id != st.info.end() ? e_id->second : st.name);
   cif::Block block("structure_" + id);
@@ -65,6 +68,14 @@ inline cif::Block prepare_crd(const Structure& st, const Topo& topo) {
   if (initial_date != st.info.end())
     items.emplace_back("_audit.creation_date", initial_date->second);
   items.emplace_back("_software.name", "gemmi");
+
+  // this corresponds to Refmac keyword "make hydr"
+  const char* hydr = "A";  // appropriate for ReAdd*
+  if (h_change == HydrogenChange::NoChange || h_change == HydrogenChange::Shift)
+    hydr = "Y";
+  else if (h_change == HydrogenChange::Remove)
+    hydr = "N";
+  items.emplace_back("_ccp4_refmac.hatom", hydr);
 
   items.emplace_back(cif::CommentArg{"############\n"
                                      "## ENTITY ##\n"
@@ -156,12 +167,12 @@ inline cif::Block prepare_crd(const Structure& st, const Topo& topo) {
       "label_alt_id",
       "label_comp_id",
       "label_asym_id",
-      "auth_seq_id",
-      //"pdbx_PDB_ins_code",
+      "auth_seq_id", // including insertion code (no pdbx_PDB_ins_code)
       "Cartn_x",
       "Cartn_y",
       "Cartn_z",
       "occupancy",
+      "ccp4_hd_mixture",  // tags[11]
       "B_iso_or_equiv",
       "type_symbol",
       "calc_flag",
@@ -181,8 +192,7 @@ inline cif::Block prepare_crd(const Structure& st, const Topo& topo) {
     for (const Topo::ResInfo& ri : chain_info.res_infos) {
       const ChemComp& cc = ri.chemcomp;
       const Residue& res = *ri.res;
-      std::string auth_seq_id = res.seqid.num.str();
-      //std::string ins_code(1, res.icode != ' ' ? res.icode : '?');
+      std::string auth_seq_id = res.seqid.str();
       for (const Atom& a : res.atoms) {
         vv.emplace_back("ATOM");
         vv.emplace_back(std::to_string(a.serial));
@@ -191,11 +201,11 @@ inline cif::Block prepare_crd(const Structure& st, const Topo& topo) {
         vv.emplace_back(res.name);
         vv.emplace_back(cif::quote(chain_info.chain_ref.name));
         vv.emplace_back(auth_seq_id);
-        //vv.emplace_back(ins_code);
         vv.emplace_back(to_str(a.pos.x));
         vv.emplace_back(to_str(a.pos.y));
         vv.emplace_back(to_str(a.pos.z));
         vv.emplace_back(to_str(a.occ));
+        vv.emplace_back(st.has_hd_mixture ? to_str(a.mixture) : "1");
         vv.emplace_back(to_str(a.b_iso));
         vv.emplace_back(a.element.uname());
         vv.emplace_back(refmac_calc_flag(a));
@@ -216,6 +226,18 @@ inline cif::Block prepare_crd(const Structure& st, const Topo& topo) {
   return block;
 }
 
+template<int Prec>
+std::string to_str_dot(double d) {
+  static_assert(Prec >= 0 && Prec < 7, "unsupported precision");
+  if (!std::isnan(d)) {
+    char buf[16];
+    int len = gstb_sprintf(buf, "%.*f", Prec, d);
+    if (len > 0)
+      return std::string(buf, len);
+  }
+  return ".";
+}
+
 inline void add_restraint_row(cif::Loop& restr_loop,
                               const char* record, int counter,
                               const std::string& label, const std::string& period,
@@ -230,7 +252,6 @@ inline void add_restraint_row(cif::Loop& restr_loop,
       return;
 
   auto& values = restr_loop.values;
-  auto to_str_dot = [&](double x) { return std::isnan(x) ? "." : to_str_prec<3>(x); };
   values.emplace_back(record);  // record
   values.emplace_back(std::to_string(counter));  // number
   values.emplace_back(label);  // label
@@ -239,10 +260,10 @@ inline void add_restraint_row(cif::Loop& restr_loop,
     values.emplace_back(std::to_string(a->serial));  // atom_id_i
   for (size_t i = atoms.size(); i < 4; ++i)
     values.emplace_back(".");
-  values.emplace_back(to_str_dot(value));  // value
-  values.emplace_back(to_str_dot(dev));  // dev
-  values.emplace_back(to_str_dot(value_nucleus));  // value_nucleus
-  values.emplace_back(to_str_dot(dev_nucleus));  // dev_nucleus
+  values.emplace_back(to_str_dot<4>(value));  // value
+  values.emplace_back(to_str_dot<4>(dev));  // dev
+  values.emplace_back(to_str_dot<4>(value_nucleus));  // value_nucleus
+  values.emplace_back(to_str_dot<4>(dev_nucleus));  // dev_nucleus
   values.emplace_back(to_str_prec<3>(obs));  // val_obs
   std::string& last = values.back();
   last += " #";
@@ -378,6 +399,20 @@ inline cif::Block prepare_rst(const Topo& topo, const MonLib& monlib, const Unit
   }
 
   return block;
+}
+
+inline cif::Document prepare_refmac_crd(const Structure& st, const Topo& topo,
+                                        const MonLib& monlib, HydrogenChange h_change) {
+  cif::Document doc;
+  doc.blocks.push_back(prepare_crd(st, topo, h_change));
+  doc.blocks.push_back(prepare_rst(topo, monlib, st.cell));
+  doc.blocks.emplace_back("ccp4_refmac_mmcif");
+  for (const auto& p : monlib.monomers) {
+    const ChemComp& cc = p.second;
+    doc.blocks.emplace_back(cc.name);
+    add_chemcomp_to_block(cc, doc.blocks.back());
+  }
+  return doc;
 }
 
 } // namespace gemmi

@@ -2,6 +2,7 @@
 
 #include "gemmi/symmetry.hpp"
 #include "gemmi/grid.hpp"
+#include "gemmi/asumask.hpp"  // for get_asu_mask
 #include <cstdio>
 #include <cstdlib>  // for atoi
 
@@ -54,7 +55,7 @@ void draw_asu(const gemmi::SpaceGroup* sg, int n) {
   gemmi::Grid<float> grid;
   grid.spacegroup = sg;
   grid.set_size(n, n, n);
-  std::vector<std::int8_t> mask = grid.get_asu_mask<std::int8_t>();
+  std::vector<std::int8_t> mask = gemmi::get_asu_mask(grid);
   int idx = 0;
   for (int w = 0; w != n; ++w) {
     for (int v = 0; v != n; ++v) {
@@ -101,13 +102,15 @@ void print_info(const gemmi::SpaceGroup* sg, bool verbose) {
   printf("Laue class: %s\n", sg->laue_str());
   printf("Crystal system: %s\n", sg->crystal_system_str());
   gemmi::GroupOps ops = sg->operations();
-  printf("Is centric: %s\n", ops.is_centric() ? "yes" : "no");
+  printf("Is centrosymmetric: %s\n", ops.is_centrosymmetric() ? "yes" : "no");
   printf("Is enantiomorphic: %s\n", sg->is_enantiomorphic() ? "yes" : "no");
   std::array<int, 3> gf = ops.find_grid_factors();
   printf("Grid restrictions: NX=%dn NY=%dn NZ=%dn\n", gf[0], gf[1], gf[2]);
   printf("Reciprocal space ASU%s: %s\n",
          is_reference ? "" : " wrt. standard setting",
          gemmi::ReciprocalAsu(sg).condition_str());
+  gemmi::AsuBrick brick = gemmi::find_asu_brick(sg);
+  printf("Direct space ASU brick: %s\n", brick.str().c_str());
   print_symmetry_operations(ops);
   if (verbose)
     print_verbose_info(sg->hall);

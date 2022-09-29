@@ -44,6 +44,7 @@ void add_monlib(py::module& m) {
       .value("PPeptide", ChemLink::Group::PPeptide)
       .value("MPeptide", ChemLink::Group::MPeptide)
       .value("Pyranose", ChemLink::Group::Pyranose)
+      .value("Ketopyranose", ChemLink::Group::Ketopyranose)
       .value("DnaRna",   ChemLink::Group::DnaRna)
       .value("Null",     ChemLink::Group::Null);
 
@@ -80,8 +81,8 @@ void add_monlib(py::module& m) {
     .def("find_residue_info", &MonLib::find_residue_info, py::arg("name"),
          py::return_value_policy::reference_internal)
     .def("match_link", &MonLib::match_link,
-         py::arg("comp1"), py::arg("atom1"),
-         py::arg("comp2"), py::arg("atom2"),
+         py::arg("res1"), py::arg("atom1"),
+         py::arg("res2"), py::arg("atom2"), py::arg("altloc"),
          py::return_value_policy::reference_internal)
     .def("add_monomer_if_present", &MonLib::add_monomer_if_present)
     .def("add_monomers_if_present", &MonLib::add_monomers_if_present)
@@ -96,6 +97,10 @@ void add_monlib(py::module& m) {
     })
     .def("read_monomer_cif", [](MonLib& self, const std::string& path) {
       return self.read_monomer_cif(path, gemmi::read_cif_gz);
+    })
+    .def("read_monomer_lib", [](MonLib& self, const std::string& monomer_dir,
+                                const std::vector<std::string>& resnames) {
+      return self.read_monomer_lib(monomer_dir, resnames, gemmi::read_cif_gz);
     })
     .def("path", &MonLib::path, py::arg("code")=nullptr)
     .def("__repr__", [](const MonLib& self) {

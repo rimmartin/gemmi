@@ -187,6 +187,7 @@ void add_unitcell(py::module& m) {
     .def_readonly("vec", &Transform::vec)
     .def("inverse", &Transform::inverse)
     .def("apply", &Transform::apply)
+    .def("combine", &Transform::combine)
     .def("is_identity", &Transform::is_identity)
     .def("approx", &Transform::approx, py::arg("other"), py::arg("epsilon"));
 
@@ -266,6 +267,9 @@ void add_unitcell(py::module& m) {
     .def_readonly("volume", &UnitCell::volume)
     .def_readonly("images", &UnitCell::images)
     .def_property_readonly("parameters", &make_parameters_tuple)
+    .def_readonly("frac", &UnitCell::frac)
+    .def_readonly("orth", &UnitCell::orth)
+    // These two functions are deprecated, use frac.mat and orth.mat.
     .def_property_readonly("fractionalization_matrix",
                            [](const UnitCell& self) { return self.frac.mat; })
     .def_property_readonly("orthogonalization_matrix",
@@ -284,6 +288,7 @@ void add_unitcell(py::module& m) {
     .def("calculate_u_eq", &UnitCell::calculate_u_eq)
     .def("fractionalize", &UnitCell::fractionalize)
     .def("orthogonalize", &UnitCell::orthogonalize)
+    .def("op_as_transform", &UnitCell::op_as_transform)
     .def("volume_per_image", &UnitCell::volume_per_image)
     .def("find_nearest_image", &UnitCell::find_nearest_image,
          py::arg("ref"), py::arg("pos"), py::arg("asu")=Asu::Any)
@@ -396,5 +401,8 @@ void add_unitcell(py::module& m) {
   m.def("find_lattice_2fold_ops", &find_lattice_2fold_ops,
         py::arg("reduced_cell"), py::arg("max_obliq"));
   m.def("find_lattice_symmetry_r", &find_lattice_symmetry_r);
-  m.def("find_lattice_symmetry", &find_lattice_symmetry);
+  m.def("find_lattice_symmetry", &find_lattice_symmetry,
+        py::arg("cell"), py::arg("centring"), py::arg("max_obliq"));
+  m.def("find_twin_laws", &find_twin_laws,
+        py::arg("cell"), py::arg("sg"), py::arg("max_obliq"), py::arg("all_ops"));
 }

@@ -5,6 +5,7 @@
 #include "gemmi/modify.hpp"     // for remove_alternative_conformations
 #include "gemmi/polyheur.hpp"   // for one_letter_code, trim_to_alanine
 #include "gemmi/assembly.hpp"   // for expand_ncs, HowToNameCopiedChain
+#include "gemmi/select.hpp"     // for Selection
 #include "tostr.hpp"
 
 #include "common.h"
@@ -59,6 +60,7 @@ void add_mol(py::module& m) {
   py::class_<Model> pyModel(m, "Model");
   py::class_<ResidueSpan> pyResidueSpan(m, "ResidueSpan");
   py::class_<ResidueGroup, ResidueSpan> pyResidueGroup(m, "ResidueGroup");
+  py::class_<Selection> pySelection(m, "Selection");
 
   py::enum_<HowToNameCopiedChain>(m, "HowToNameCopiedChain")
     .value("Short", HowToNameCopiedChain::Short)
@@ -139,13 +141,19 @@ void add_mol(py::module& m) {
     .def("ensure_entities", &ensure_entities)
     .def("deduplicate_entities", &deduplicate_entities)
     .def("setup_entities", &setup_entities)
+    .def("assign_cis_flags", assign_cis_flags<Structure>)
     .def("remove_alternative_conformations",
          remove_alternative_conformations<Structure>)
     .def("remove_hydrogens", remove_hydrogens<Structure>)
     .def("remove_waters", remove_waters<Structure>)
     .def("remove_ligands_and_waters", remove_ligands_and_waters<Structure>)
+    .def("assign_serial_numbers", (void (*)(Structure&)) &assign_serial_numbers)
     .def("shorten_chain_names", &shorten_chain_names)
     .def("expand_ncs", &expand_ncs, py::arg("how"))
+    .def("transform_to_assembly",
+         [](Structure& st, const std::string& assembly_name, HowToNameCopiedChain how) {
+        return transform_to_assembly(st, assembly_name, how, nullptr);
+    }, py::arg("assembly_name"), py::arg("how"))
     .def("calculate_box", &calculate_box, py::arg("margin")=0.)
     .def("calculate_fractional_box", &calculate_fractional_box, py::arg("margin")=0.)
     .def("clone", [](const Structure& self) { return new Structure(self); })
@@ -225,16 +233,16 @@ void add_mol(py::module& m) {
     .def("remove_hydrogens", remove_hydrogens<Model>)
     .def("remove_waters", remove_waters<Model>)
     .def("remove_ligands_and_waters", remove_ligands_and_waters<Model>)
-    .def("count_atom_sites", &count_atom_sites<Model>)
+    .def("has_hydrogen", &has_hydrogen<Model>)
+    .def("count_atom_sites", &count_atom_sites<Model>, py::arg("sel")=nullptr)
+    // deprecated, use has_hydrogen() or count_atom_sites(Selection('[H,D]'))
     .def("count_hydrogen_sites", &count_hydrogen_sites<Model>)
-    .def("count_occupancies", &count_occupancies<Model>)
+    .def("count_occupancies", &count_occupancies<Model>, py::arg("sel")=nullptr)
     .def("calculate_mass", &calculate_mass<Model>)
     .def("calculate_center_of_mass", [](const Model& self) {
         return calculate_center_of_mass(self).get();
     })
     .def("transform_pos_and_adp", transform_pos_and_adp<Model>, py::arg("tr"))
-    // the same function under differnt name - for compability
-    .def("transform", transform_pos_and_adp<Model>, py::arg("tr"))
     .def("split_chains_by_segments", &split_chains_by_segments)
     .def("clone", [](const Model& self) { return new Model(self); })
     .def("__repr__", [](const Model& self) {
@@ -300,8 +308,8 @@ void add_mol(py::module& m) {
          py::return_value_policy::reference_internal)
     .def("append_residues", &Chain::append_residues,
          py::arg("new_residues"), py::arg("min_sep")=0)
-    .def("count_atom_sites", &count_atom_sites<Chain>)
-    .def("count_occupancies", &count_occupancies<Chain>)
+    .def("count_atom_sites", &count_atom_sites<Chain>, py::arg("sel")=nullptr)
+    .def("count_occupancies", &count_occupancies<Chain>, py::arg("sel")=nullptr)
     .def("calculate_mass", &calculate_mass<Chain>)
     .def("calculate_center_of_mass", [](const Chain& self) {
           return calculate_center_of_mass(self).get();
@@ -402,10 +410,15 @@ void add_mol(py::module& m) {
     .def(py::init<>())
     .def_readwrite("subchain", &Residue::subchain)
     .def_readonly("entity_id", &Residue::entity_id)
+    .def_readwrite("label_seq", &Residue::label_seq)
     .def_readwrite("entity_type", &Residue::entity_type)
     .def_readwrite("het_flag", &Residue::het_flag)
     .def_readwrite("flag", &Residue::flag)
-    .def_readwrite("label_seq", &Residue::label_seq)
+    .def_property_readonly("sifts_unp", [](const Residue& self) {
+        return py::make_tuple(self.sifts_unp.res,
+                              self.sifts_unp.acc_index,
+                              self.sifts_unp.num);
+    })
     .def("__len__", [](const Residue& res) { return res.atoms.size(); })
     .def("__contains__", [](const Residue& res, const std::string& name) {
         return res.find_atom(name, '*') != nullptr;
@@ -502,4 +515,54 @@ void add_mol(py::module& m) {
                             HowToNameCopiedChain how) {
         return make_assembly(assembly, model, how, nullptr);
   });
+
+  // select.hpp
+  py::class_<FilterProxy<Selection, Model>> pySelectionModelsProxy(m, "SelectionModelsProxy");
+  py::class_<FilterProxy<Selection, Chain>> pySelectionChainsProxy(m, "SelectionChainsProxy");
+  py::class_<FilterProxy<Selection, Residue>> pySelectionResiduesProxy(m, "SelectionResiduesProxy");
+  py::class_<FilterProxy<Selection, Atom>> pySelectionAtomsProxy(m, "SelectionAtomsProxy");
+
+  pySelection
+    .def(py::init<>())
+    .def(py::init<const std::string&>())
+    .def("models", &Selection::models)
+    .def("chains", &Selection::chains)
+    .def("residues", &Selection::residues)
+    .def("atoms", &Selection::atoms)
+    .def("first_in_model", &Selection::first_in_model,
+         py::keep_alive<1, 2>())
+    .def("first", &Selection::first, py::return_value_policy::reference,
+         py::keep_alive<1, 2>())
+    .def("str", &Selection::str)
+    .def("set_residue_flags", &Selection::set_residue_flags)
+    .def("set_atom_flags", &Selection::set_atom_flags)
+    .def("copy_model_selection", &Selection::copy_selection<Model>)
+    .def("copy_structure_selection", &Selection::copy_selection<Structure>)
+    .def("remove_selected", &Selection::remove_selected<Structure>)
+    .def("remove_selected", &Selection::remove_selected<Model>)
+    .def("remove_not_selected", &Selection::remove_not_selected<Structure>)
+    .def("remove_not_selected", &Selection::remove_not_selected<Model>)
+    .def("__repr__", [](const Selection& self) {
+        return "<gemmi.Selection CID: " + self.str() + ">";
+    });
+
+  pySelectionModelsProxy
+    .def("__iter__", [](FilterProxy<Selection, Model>& self) {
+        return py::make_iterator(self);
+    }, py::keep_alive<0, 1>());
+
+  pySelectionChainsProxy
+    .def("__iter__", [](FilterProxy<Selection, Chain>& self) {
+        return py::make_iterator(self);
+    }, py::keep_alive<0, 1>());
+
+  pySelectionResiduesProxy
+    .def("__iter__", [](FilterProxy<Selection, Residue>& self) {
+        return py::make_iterator(self);
+    }, py::keep_alive<0, 1>());
+
+  pySelectionAtomsProxy
+    .def("__iter__", [](FilterProxy<Selection, Atom>& self) {
+        return py::make_iterator(self);
+    }, py::keep_alive<0, 1>());
 }

@@ -430,7 +430,8 @@ Another way to get Miller indices as a N×3 array of integers is:
 The same method is available also in ReflnBlock (which represents SF-mmCIF
 and is described in a later section). Similarly, :ref:`AsuData <asu_data>`
 has a property ``miller_array``.
-And finally, gemmi has a standalone function ``make_miller_array()``
+
+There is also a standalone function ``make_miller_array()``
 that returns all reflections in a resolution shell.
 To get all unique reflections up to the same resolution
 as the example MTZ file we can do:
@@ -448,7 +449,7 @@ as the example MTZ file we can do:
          [ 5,  2,  1],
          [ 5,  2,  2]]...)
 
-We also have two optional parameters (not used above): ``dmax`` and ``unique``.
+This function has two optional parameters (not used above): ``dmax`` and ``unique``.
 Setting ``unique=False`` returns all equivalent reflections.
 By default, only reflections from the reciprocal space ASU are returned.
 
@@ -494,13 +495,22 @@ for working with reflection data in Python:
 Modifying
 ---------
 
-To change the data in Mtz object we can use function set_data().
-In Python, we pass to this function a 2D NumPy array of floating point numbers.
+To change the data in-place, without changing the number of columns and rows,
+simply modify the array with data. In Python, you can use NumPy functions.
+As an example, let's add 0.5 to each value in the last column
+(in this case SIGI):
 
-In the previous section, we got such an array (``all_data``)
-with the original data.
-Now, as an example, let us remove reflections with the resolution
-above 2Å (i.e. *d* < 2Å) and copy the result back into ``mtz``.
+.. doctest::
+  :skipif: numpy is None
+
+  >>> mtz.array[:,-1] += 0.5
+
+A more general way to change the data is by calling Mtz.set_data().
+In Python, this function takes as an argument a 2D NumPy array of floating
+point numbers. The new data must have the same number of columns, but
+the number of rows can differ.
+As an example, let's use set_data() to remove reflections with the resolution
+above 2Å (i.e. *d* < 2Å).
 To show that it really has an effect we print the appropriate
 :ref:`grid size <grid_size>` before and after:
 
@@ -509,9 +519,23 @@ To show that it really has an effect we print the appropriate
 
   >>> mtz.get_size_for_hkl()
   [12, 12, 24]
-  >>> mtz.set_data(all_data[mtz.make_d_array() >= 2.0])
+  >>> mtz.set_data(mtz.array[mtz.make_d_array() >= 2.0])
   >>> mtz.get_size_for_hkl()
   [10, 10, 20]
+
+A merged MTZ file uses one of the equivalent hkl indices
+for each reflection. The used hkl is usually the one from
+the reciprocal-space ASU. Both CCP4 and CCTBX use the same
+reciprocal-space ASU definitions. But if you'd have a different
+choice of hkls in the file, you may switch to the usual one with:
+
+.. doctest::
+
+  >>> mtz.ensure_asu()
+
+(You may also call ``mtz.ensure_asu(tnt=True)`` to use the ASU defined
+in the `TNT <https://www.uoxray.uoregon.edu/tnt/manual/node110.html>`_
+program, but it is unlikely that you will ever need it).
 
 To sort data rows by the *h,k,l* indices call ``Mtz::sort()``:
 
@@ -530,6 +554,14 @@ where index is 0-based column index:
   >>> mtz.column_with_label('FREE').idx
   3
   >>> mtz.remove_column(_)  # removes column 3 (FREE)
+
+Columns can be added with ``Mtz::add_column()``:
+
+.. doctest::
+
+  >>> mtz.add_column('FREE', 'I', dataset_id=0, pos=3)
+  <gemmi.Mtz.Column FREE type I>
+
 
 We also have two functions for copying columns.
 The first function is overwriting the destination column,
@@ -556,12 +588,12 @@ In such case you can use ``trailing_cols``:
   >>> mtz.copy_column(-1, _, trailing_cols=['SIGFP'])
   <gemmi.Mtz.Column FP type F>
   >>> [col.label for col in mtz.columns]
-  ['H', 'K', 'L', 'FP', 'SIGFP', 'I', 'SIGI', 'FP', 'SIGFP']
+  ['H', 'K', 'L', 'FREE', 'FP', 'SIGFP', 'I', 'SIGI', 'FP', 'SIGFP']
   >>> # duplicated labels would need to be changed before saving the file
 
-This function checks if the next column has label SIGFP and copies it as well.
-To copy the next column without checking pass the empty string,
-i.e. ``trailing_cols=['']``.
+The call above checked that the next column has label SIGFP and copied it
+as well. To copy the next column without checking the label pass the empty
+string, i.e. ``trailing_cols=['']``.
 
 ----
 
@@ -1598,7 +1630,7 @@ and it can be stored in a CCP4 map format:
 
   >>> ccp4 = gemmi.Ccp4Map()
   >>> ccp4.grid = rblock.transform_f_phi_to_map('pdbx_FWT', 'pdbx_PHWT', sample_rate=2.6)
-  >>> ccp4.update_ccp4_header(2, True)
+  >>> ccp4.update_ccp4_header()
   >>> ccp4.write_ccp4_map('5wkd.ccp4')
 
 To transform the electron density back to reciprocal space coefficients
@@ -1659,11 +1691,10 @@ used: one from the International Tables of Crystallography Vol. C
 Other parametrizations exist (for example, with only two Gaussians),
 but are not widely used.
 
-Currently, Gemmi includes only the ITC parametrization.
-The other ones will be added if needed. Furthermore, we ignore charges
-of atoms. For example, the ITC provides separate form factors for Cu, Cu1+
-and Cu2+, but we use only the first one. Again, if it turns out to be useful,
-we will add also the charged parametrizations.
+Currently, Gemmi includes only the ITC parametrization,
+ignoring charges of atoms. For example, the ITC provides separate form factors
+for Cu, Cu1+ and Cu2+, but we use only the first one.
+(If this is not sufficient for your needs, contact the developers).
 
 In C++, the form factor coefficients are listed in the :file:`it92.hpp` header.
 In Python, they can be accessed as a property of an element (this may change).
@@ -1717,6 +1748,15 @@ to the original values:
   >>> for i in range(1, 99):
   ...     gemmi.Element(i).it92.set_coefs(orig_coefs[i])
 
+Macromolecular models may have unknown atoms (UNK)
+with element specified as X. By default, we use oxygen's coefficients for X,
+but you may change it (as well as coefficients of any other atom):
+
+.. doctest::
+
+  >>> c_coefs = gemmi.Element('C').it92.get_coefs()
+  >>> gemmi.Element('X').it92.set_coefs(c_coefs)
+
 The coefficients can be used to directly calculate the sum of Gaussians --
 the structure factor contribution:
 
@@ -1744,12 +1784,6 @@ performed once per atom, the second one -- for each nearby grid point.
 
 In the usual scenario, we add *f'* (the real component of anomalous
 scattering -- see the next section) to the constant coefficient *c*.
-
-We may also want to add a Gaussian :ref:`dampening <blur>`
-*B*\ :sub:`extra` to ADPs.
-It is a trick that improves the accuracy. *B*\ :sub:`extra` added
-in the real space is then cancelled out in the reciprocal space by re-scaling
-the structure factors.
 
 .. _anomalous:
 
@@ -1919,6 +1953,9 @@ Similarly, for small molecules:
   >>> calc_x.calculate_sf_from_small_structure(small, (0,2,4))
   (17.814263474967163-6.544854223135837e-15j)
 
+For each atom, the Debye-Waller factor (used in the structure factor
+calculation) is obtained using either isotropic or anisotropic ADPs
+(B-factors). If anisotropic ADPs are non-zero, isotropic ADP is ignored.
 
 .. _addends:
 
@@ -2071,10 +2108,10 @@ of the calculated structure factors:
 Choosing these parameters is a trade-off between efficiency and accuracy.
 *B*\ :sub:`extra` is the most interesting one.
 It is discussed in the `ITfC vol B <https://it.iucr.org/Bb/contents/>`_,
-chapter 1.3 by G. Bricogne, section 1.3.4.4.5, and further in papers by
+section 1.3.4.4.5 by G. Bricogne, and further in papers by
 `J. Navaza (2002) <https://doi.org/10.1107/S0108767302016318>`_ and by
 `P. Afonine and A. Urzhumtsev (2003) <https://doi.org/10.1107/S0108767303022062>`_,
-but without a formula for optimal value.
+but no formula for the optimal value exists.
 The value of *B*\ :sub:`extra` that
 gives the most accurate results depends on the resolution, oversampling,
 atomic radius cut-off, and on the distribution of B-factors

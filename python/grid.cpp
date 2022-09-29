@@ -14,6 +14,7 @@ bool operator>(const std::complex<float>& a, const std::complex<float>& b) {
 #include "gemmi/floodfill.hpp"  // for flood_fill_above
 #include "gemmi/solmask.hpp"  // for SolventMasker, mask_points_in_constant_radius
 #include "gemmi/blob.hpp"     // for Blob, find_blobs_by_flood_fill
+#include "gemmi/asumask.hpp"  // for MaskedGrid
 #include "tostr.hpp"
 
 #include "common.h"
@@ -115,7 +116,8 @@ py::class_<Grid<T>, GridBase<T>> add_grid_common(py::module& m, const std::strin
     .def("symmetrize_max", &Gr::symmetrize_max)
     .def("symmetrize_abs_max", &Gr::symmetrize_abs_max)
     .def("symmetrize_sum", &Gr::symmetrize_sum)
-    .def("masked_asu", &Gr::masked_asu, py::keep_alive<0, 1>())
+    .def("resample_to", &Gr::resample_to, py::arg("dest"), py::arg("order"))
+    .def("masked_asu", &masked_asu<T>, py::keep_alive<0, 1>())
     .def("mask_points_in_constant_radius", &mask_points_in_constant_radius<T>,
          py::arg("model"), py::arg("radius"), py::arg("value"))
     .def("get_subarray",
@@ -158,20 +160,18 @@ void add_grid_interpolation(py::class_<Grid<T>, GridBase<T>>& grid) {
          (T (Gr::*)(const Fractional&) const) &Gr::interpolate_value)
     .def("interpolate_value",
          (T (Gr::*)(const Position&) const) &Gr::interpolate_value)
+    // TODO: find a better name for this func, perhaps interpolate_array?
     .def("interpolate_values",
-         [](const Gr& self, py::array_t<T> arr, const Transform& tr, bool cubic) {
+         [](const Gr& self, py::array_t<T> arr, const Transform& tr, int order) {
         auto r = arr.template mutable_unchecked<3>();
         for (int i = 0; i < r.shape(0); ++i)
           for (int j = 0; j < r.shape(1); ++j)
             for (int k = 0; k < r.shape(2); ++k) {
               Position pos(tr.apply(Vec3(i, j, k)));
               Fractional fpos = self.unit_cell.fractionalize(pos);
-              if (cubic)
-                r(i, j, k) = (T) self.tricubic_interpolation(fpos);
-              else
-                r(i, j, k) = self.interpolate_value(fpos);
+              r(i, j, k) = self.interpolate(fpos, order);
             }
-    }, py::arg().noconvert(), py::arg(), py::arg("cubic")=false)
+    }, py::arg().noconvert(), py::arg(), py::arg("order")=2)
     .def("tricubic_interpolation",
          (double (Gr::*)(const Fractional&) const) &Gr::tricubic_interpolation)
     .def("tricubic_interpolation",
@@ -202,15 +202,18 @@ void add_grid(py::module& m) {
       return py::make_tuple(self.nu, self.nv, self.nw);
     });
 
-  add_grid_base<int8_t>(m, "Int8GridBase");
+  add_grid_base<int8_t>(m, "Int8GridBase")
+    .def("get_nonzero_extent", &get_nonzero_extent<int8_t>);
   add_grid_common<int8_t>(m, "Int8Grid");
 
   add_grid_base<float>(m, "FloatGridBase")
     .def("calculate_correlation", &calculate_correlation<float>)
+    .def("get_nonzero_extent", &get_nonzero_extent<float>)
     ;
   auto grid_float = add_grid_common<float>(m, "FloatGrid");
   add_grid_interpolation<float>(grid_float);
-  grid_float.def("normalize", &normalize_grid<float>);
+  grid_float.def("normalize", &Grid<float>::normalize);
+  grid_float.def("add_soft_edge_to_mask", &add_soft_edge_to_mask<float>);
 
   add_grid_base<std::complex<float>>(m, "ComplexGridBase");
 
@@ -234,9 +237,11 @@ void add_grid(py::module& m) {
     .def("put_mask_on_float_grid", &SolventMasker::put_mask_on_grid<float>)
     .def("set_to_zero", &SolventMasker::set_to_zero)
     ;
+  m.def("interpolate_grid", &interpolate_grid<float>,
+        py::arg("dest"), py::arg("src"), py::arg("tr"), py::arg("order")=2);
   m.def("interpolate_grid_of_aligned_model2", &interpolate_grid_of_aligned_model2<float>,
         py::arg("dest"), py::arg("src"), py::arg("tr"),
-        py::arg("dest_model"), py::arg("radius"));
+        py::arg("dest_model"), py::arg("radius"), py::arg("order")=2);
 
 
   // from blob.hpp
@@ -262,4 +267,13 @@ void add_grid(py::module& m) {
   // from floodfill.hpp
   m.def("flood_fill_above", &flood_fill_above,
         py::arg("grid"), py::arg("seeds"), py::arg("threshold"), py::arg("negate")=false);
+
+  // from asumask.hpp
+  py::class_<AsuBrick>(m, "AsuBrick")
+    .def_readonly("size", &AsuBrick::size)
+    .def_readonly("incl", &AsuBrick::incl)
+    .def("get_extent", &AsuBrick::get_extent)
+    .def("str", &AsuBrick::str)
+    ;
+  m.def("find_asu_brick", &find_asu_brick);
 }

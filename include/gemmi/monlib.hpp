@@ -32,9 +32,9 @@ inline void add_distinct_altlocs(const Residue& res, std::string& altlocs) {
 struct ChemLink {
   enum class Group {
     // _chem_link.group_comp_N is one of:
-    // "peptide", "P-peptide", "M-peptide", "pyranose", "DNA/RNA" or null
+    // "peptide", "P-peptide", "M-peptide", "pyranose", "ketopyranose", "DNA/RNA" or null
     // (we ignore "polymer")
-    Peptide, PPeptide, MPeptide, Pyranose, DnaRna, Null
+    Peptide, PPeptide, MPeptide, Pyranose, Ketopyranose, DnaRna, Null
   };
   struct Side {
     std::string comp;
@@ -68,6 +68,7 @@ struct ChemLink {
         case ialpha4_id("p-pe"): return Group::PPeptide;
         case ialpha4_id("m-pe"): return Group::MPeptide;
         case ialpha4_id("pyra"): return Group::Pyranose;
+        case ialpha4_id("keto"): return Group::Ketopyranose;
         case ialpha4_id("dna/"): return Group::DnaRna;
       }
     }
@@ -80,6 +81,7 @@ struct ChemLink {
       case Group::PPeptide: return "P-peptide";
       case Group::MPeptide: return "M-peptide";
       case Group::Pyranose: return "pyranose";
+      case Group::Ketopyranose: return "ketopyranose";
       case Group::DnaRna: return "DNA/RNA";
       case Group::Null: return ".";
     }
@@ -98,6 +100,7 @@ struct ChemLink {
       case ResidueInfo::BUF:     return Group::Null;
       case ResidueInfo::HOH:     return Group::Null;
       case ResidueInfo::PYR:     return Group::Pyranose;
+      case ResidueInfo::KET:     return Group::Ketopyranose;
       case ResidueInfo::ELS:     return Group::Null;
     }
     unreachable();
@@ -229,6 +232,7 @@ inline ResidueInfo::Kind chemcomp_group_to_kind(const std::string& group) {
       case ialpha4_id("dna"): return ResidueInfo::DNA;
       case ialpha4_id("rna"): return ResidueInfo::RNA;
       case ialpha4_id("pyra"): return ResidueInfo::PYR;
+      case ialpha4_id("keto"): return ResidueInfo::KET;
     }
   }
   return ResidueInfo::UNKNOWN;
@@ -538,8 +542,33 @@ inline void ChemMod::apply_to(ChemComp& chemcomp) const {
     }
 }
 
+struct EnerLib {
+  struct Atom {
+    Element element;
+    char hb_type;
+    double vdw_radius;
+    double vdwh_radius;
+    double ion_radius;
+    int valency;
+    int sp;
+  };
+
+  EnerLib() {}
+  void read(const cif::Document& doc) {
+    cif::Block& block = const_cast<cif::Block&>(doc.blocks[0]);
+    for (const auto& row : block.find("_lib_atom.",
+                    {"type", "hb_type", "vdw_radius", "vdwh_radius",
+                     "ion_radius", "element", "valency", "sp"}))
+      atoms.emplace(row[0], Atom{Element(row[5]), row[1][0], cif::as_number(row[2]),
+                                 cif::as_number(row[3]), cif::as_number(row[4]),
+                                 cif::as_int(row[6], -1), cif::as_int(row[7], -1)});
+  }
+  std::map<std::string, Atom> atoms; // type->Atom
+};
+
 struct MonLib {
   cif::Document mon_lib_list;
+  EnerLib ener_lib;
   std::map<std::string, ChemComp> monomers;
   std::map<std::string, ChemLink> links;
   std::map<std::string, ChemMod> modifications;
@@ -560,10 +589,10 @@ struct MonLib {
 
   // Returns the most specific link and a flag that is true
   // if the order is comp2-comp1 in the link definition.
-  // We don't check chirality here (cf. calculate_score).
   std::pair<const ChemLink*, bool>
-  match_link(const std::string& comp1, const std::string& atom1,
-             const std::string& comp2, const std::string& atom2) const {
+  match_link(const Residue& res1, const std::string& atom1,
+             const Residue& res2, const std::string& atom2,
+             char alt) const {
     const ChemLink* best_link = nullptr;
     int best_score = -1;
     bool inverted = false;
@@ -574,9 +603,9 @@ struct MonLib {
       // for now we don't have link definitions with >1 bonds
       const Restraints::Bond& bond = link.rt.bonds[0];
       if (bond.id1.atom == atom1 && bond.id2.atom == atom2 &&
-          link_side_matches_residue(link.side1, comp1) &&
-          link_side_matches_residue(link.side2, comp2)) {
-        int score = link.side1.specificity() + link.side2.specificity();
+          link_side_matches_residue(link.side1, res1.name) &&
+          link_side_matches_residue(link.side2, res2.name)) {
+        int score = link.calculate_score(res1, &res2, alt);
         if (score > best_score) {
           best_link = &link;
           best_score = score;
@@ -584,9 +613,9 @@ struct MonLib {
         }
       }
       if (bond.id1.atom == atom2 && bond.id2.atom == atom1 &&
-          link_side_matches_residue(link.side1, comp2) &&
-          link_side_matches_residue(link.side2, comp1)) {
-        int score = link.side1.specificity() + link.side2.specificity();
+          link_side_matches_residue(link.side1, res2.name) &&
+          link_side_matches_residue(link.side2, res1.name)) {
+        int score = link.calculate_score(res2, &res1, alt);
         if (score > best_score) {
           best_link = &link;
           best_score = score;
@@ -656,41 +685,75 @@ struct MonLib {
     return path;
   }
 
-  void read_monomer_cif(const std::string& path, read_cif_func read_cif) {
-    mon_lib_list = (*read_cif)(path);
+  void read_monomer_cif(const std::string& path_, read_cif_func read_cif) {
+    mon_lib_list = (*read_cif)(path_);
     for (const cif::Block& block : mon_lib_list.blocks)
       add_monomer_if_present(block);
     insert_chemlinks(mon_lib_list, links);
     insert_chemmods(mon_lib_list, modifications);
     insert_comp_list(mon_lib_list, residue_infos);
   }
+
+  /// read mon_lib_list.cif, ener_lib.cif and required monomers
+  std::string read_monomer_lib(std::string monomer_dir,
+                               const std::vector<std::string>& resnames,
+                               read_cif_func read_cif) {
+    if (monomer_dir.empty())
+      fail("read_monomer_lib: monomer_dir not specified.");
+    if (monomer_dir.back() != '/' && monomer_dir.back() != '\\')
+      monomer_dir += '/';
+    read_monomer_cif(monomer_dir + "list/mon_lib_list.cif", read_cif);
+    ener_lib.read((*read_cif)(monomer_dir + "/ener_lib.cif"));
+
+    std::string error;
+    for (const std::string& name : resnames) {
+      if (monomers.find(name) != monomers.end())
+        continue;
+      try {
+        cif::Document doc = (*read_cif)(monomer_dir + relative_monomer_path(name));
+        auto cc = make_chemcomp_from_cif(name, doc);
+        monomers.emplace(name, std::move(cc));
+      } catch (std::runtime_error& err) {
+        error += "The monomer " + name + " could not be read: " + err.what() + ".\n";
+      }
+    }
+    return error;
+  }
+
+  /// Searches data from _lib_atom in ener_lib.cif.
+  /// If chem_type is not in the library uses element name as chem_type.
+  double find_radius(const const_CRA& cra, bool use_ion) const {
+    double r = 1.7;
+    auto it = ener_lib.atoms.end();
+    auto cc = monomers.find(cra.residue->name);
+    if (cc != monomers.end()) {
+      auto cc_atom = cc->second.find_atom(cra.atom->name);
+      if (cc_atom != cc->second.atoms.end())
+        it = ener_lib.atoms.find(cc_atom->chem_type);
+    }
+    if (it == ener_lib.atoms.end())
+      it = ener_lib.atoms.find(cra.atom->element.uname());
+    if (it != ener_lib.atoms.end()) {
+      if (use_ion && !std::isnan(it->second.ion_radius))
+        r = it->second.ion_radius;
+      else
+        r = it->second.vdw_radius;
+    }
+    return r;
+  }
 };
 
-inline MonLib read_monomer_lib(std::string monomer_dir,
+// deprecated
+inline MonLib read_monomer_lib(const std::string& monomer_dir,
                                const std::vector<std::string>& resnames,
                                read_cif_func read_cif,
                                const std::string& libin="",
                                bool ignore_missing=false) {
-  if (monomer_dir.empty())
-    fail("read_monomer_lib: monomer_dir not specified.");
-  if (monomer_dir.back() != '/' && monomer_dir.back() != '\\')
-    monomer_dir += '/';
   MonLib monlib;
   if (!libin.empty())
     monlib.read_monomer_cif(libin, read_cif);
-  monlib.read_monomer_cif(monomer_dir + "list/mon_lib_list.cif", read_cif);
-  std::string error;
-  for (const std::string& name : resnames) {
-    try {
-      cif::Document doc = (*read_cif)(monomer_dir + MonLib::relative_monomer_path(name));
-      auto cc = make_chemcomp_from_cif(name, doc);
-      monlib.monomers.emplace(name, std::move(cc));
-    } catch(std::runtime_error& err) {
-      if (!ignore_missing)
-        error += "The monomer " + name + " could not be read: " + err.what() + ".\n";
-    }
-  }
-  if (!error.empty())
+  std::string error = monlib.read_monomer_lib(monomer_dir, resnames, read_cif);
+  if (!ignore_missing && !error.empty())
     fail(error + "Please create definitions for missing monomers.");
   return monlib;
 }

@@ -29,11 +29,10 @@ void add_symmetry(py::module& m) {
     .def_readwrite("rot", &Op::rot, "3x3 integer matrix.")
     .def_readwrite("tran", &Op::tran,
        "Numerators (integers) of the translation vector. Denominator DEN=24.")
-    .def("triplet", &Op::triplet, "Returns coordinate triplet x,y,z.")
+    .def("triplet", &Op::triplet, py::arg("style")='x')
     .def("inverse", &Op::inverse, "Returns inverted operator.")
     .def("wrap", &Op::wrap, "Wrap the translation part to [0,1)")
     .def("translated", &Op::translated, py::arg("a"), "Adds a to tran")
-    .def("negated", &Op::negated, "Returns Op with all elements nagated")
     .def("transposed_rot", &Op::transposed_rot)
     .def("det_rot", &Op::det_rot, "Determinant of the 3x3 matrix.")
     .def("rot_type", &Op::rot_type)
@@ -62,28 +61,30 @@ void add_symmetry(py::module& m) {
     .def("apply_to_xyz", &Op::apply_to_xyz, py::arg("xyz"))
     .def("apply_to_hkl", &Op::apply_to_hkl, py::arg("hkl"))
     .def("phase_shift", &Op::phase_shift, py::arg("hkl"))
-    .def("__mul__", [](const Op &a, const Op &b) { return a * b; },
+    .def("__mul__", [](const Op& a, const Op& b) { return a * b; },
          py::is_operator())
-    .def("__mul__", [](const Op &a, const std::string &b) {
+    .def("__mul__", [](const Op &a, const std::string& b) {
             return a * parse_triplet(b);
          }, py::is_operator())
-    .def("__rmul__", [](const Op &a, const std::string &b) {
+    .def("__rmul__", [](const Op& a, const std::string& b) {
             return parse_triplet(b) * a;
          }, py::is_operator())
-    .def("__eq__", [](const Op &a, const Op &b) { return a == b; },
+    .def("__eq__", [](const Op& a, const Op& b) { return a == b; },
          py::is_operator())
-    .def("__eq__", [](const Op &a, const std::string& b) {
+    .def("__eq__", [](const Op& a, const std::string& b) {
             return a == parse_triplet(b);
          }, py::is_operator())
 #if PY_MAJOR_VERSION < 3  // in Py3 != is inferred from ==
-    .def("__ne__", [](const Op &a, const Op &b) { return a != b; },
+    .def("__ne__", [](const Op& a, const Op& b) { return a != b; },
          py::is_operator())
-    .def("__ne__", [](const Op &a, const std::string& b) {
+    .def("__ne__", [](const Op& a, const std::string& b) {
             return a != parse_triplet(b);
          }, py::is_operator())
 #endif
-    .def("__hash__", [](const Op &self) { return std::hash<Op>()(self); })
-    .def("__repr__", [](const Op &self) {
+    .def("__copy__", [](const Op& self) { return Op(self); })
+    .def("__deepcopy__", [](const Op& self, py::dict) { return Op(self); }, py::arg("memo"))
+    .def("__hash__", [](const Op& self) { return std::hash<Op>()(self); })
+    .def("__repr__", [](const Op& self) {
         return "<gemmi.Op(\"" + self.triplet() + "\")>";
     });
 
@@ -109,6 +110,8 @@ void add_symmetry(py::module& m) {
     }, py::is_operator())
 #endif
     .def("__len__", [](const GroupOps& g) { return g.order(); })
+    .def("__deepcopy__", [](const GroupOps& g, py::dict) { return GroupOps(g); },
+         py::arg("memo"))
     .def_readwrite("sym_ops", &GroupOps::sym_ops,
                "Symmetry operations (to be combined with centering vectors).")
     .def_readwrite("cen_ops", &GroupOps::cen_ops, "Centering vectors.")
@@ -116,7 +119,7 @@ void add_symmetry(py::module& m) {
     .def("find_centering", &GroupOps::find_centering)
     .def("has_same_centring", &GroupOps::has_same_centring)
     .def("has_same_rotations", &GroupOps::has_same_rotations)
-    .def("is_centric", &GroupOps::is_centric)
+    .def("is_centrosymmetric", &GroupOps::is_centrosymmetric)
     .def("is_reflection_centric", &GroupOps::is_reflection_centric)
     .def("centric_flag_array", [](const GroupOps& g, py::array_t<int> hkl) {
         return miller_function<bool>(g, &GroupOps::is_reflection_centric, hkl);
@@ -140,6 +143,8 @@ void add_symmetry(py::module& m) {
          "Applies the change-of-basis operator (in place).")
     .def("change_basis_backward", &GroupOps::change_basis_backward, py::arg("cob"),
          "Applies inverse of the change-of-basis operator (in place).")
+    .def("derive_symmorphic", &GroupOps::derive_symmorphic)
+    .def("add_inversion", &GroupOps::add_inversion)
     ;
 
   py::class_<SpaceGroup, std::unique_ptr<SpaceGroup, py::nodelete>>(m, "SpaceGroup")
@@ -179,6 +184,7 @@ void add_symmetry(py::module& m) {
     .def("crystal_system", &SpaceGroup::crystal_system)
     .def("crystal_system_str", &SpaceGroup::crystal_system_str,
          "Returns lower-case name of the crystal system.")
+    .def("is_centrosymmetric", &SpaceGroup::is_centrosymmetric)
     .def("is_reference_setting", &SpaceGroup::is_reference_setting)
     .def("centred_to_primitive", &SpaceGroup::centred_to_primitive)
     .def("operations", &SpaceGroup::operations, "Group of operations")
@@ -207,7 +213,7 @@ void add_symmetry(py::module& m) {
     ));
 
   py::class_<ReciprocalAsu>(m, "ReciprocalAsu")
-    .def(py::init<const SpaceGroup*>())
+    .def(py::init<const SpaceGroup*, bool>(), py::arg(), py::arg("tnt")=false)
     .def("is_in", &ReciprocalAsu::is_in, py::arg("hkl"))
     .def("condition_str", &ReciprocalAsu::condition_str)
     .def("to_asu", &ReciprocalAsu::to_asu, py::arg("hkl"), py::arg("group_ops"))
@@ -217,7 +223,7 @@ void add_symmetry(py::module& m) {
             return py::make_iterator(spacegroup_tables::main);
         }, py::return_value_policy::reference);
   m.def("spacegroup_table_itb", []() {
-            return py::make_iterator(spacegroup_tables::main,
+            return py::make_iterator(spacegroup_tables::main + 0,
                                      spacegroup_tables::main + 530);
         }, py::return_value_policy::reference);
   m.def("generators_from_hall", &generators_from_hall, py::arg("hall"),

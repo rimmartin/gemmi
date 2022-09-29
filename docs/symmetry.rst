@@ -217,6 +217,8 @@ and a few methods:
   True
   >>> sg.is_symmorphic()          # is it one of 73 symmorphic space groups?
   True
+  >>> sg.is_centrosymmetric()     # does it have inversion?
+  False
   >>> sg.point_group_hm()         # H-M name of the point group
   '3'
   >>> sg.laue_str()               # name of the Laue class
@@ -275,6 +277,17 @@ We can also do the opposite:
 
     >>> op.triplet()
     '-y,x-y,z+1/3'
+
+Alternatively, the letters can be hkl or abc, or uppercase:
+
+.. doctest::
+
+    >>> op.triplet(style='h')
+    '-k,h-k,l+1/3'
+    >>> op.triplet(style='a')
+    '-b,a-b,c+1/3'
+    >>> op.triplet(style='X')
+    '-Y,X-Y,Z+1/3'
 
 The operation consists of a 3x3 rotation matrix and
 a translation vector, both stored internally as integers that need to be
@@ -445,7 +458,8 @@ and change to primitive space group using ``centred_to_primitive()``:
   >>> _.centring_type()
   'P'
 
-We can create GroupOps from a list of operations:
+We can create GroupOps from a list of operations
+(in C++ use function ``split_centering_vectors``):
 
 .. doctest::
 
@@ -495,11 +509,11 @@ To check only the lattice centering we can use:
   >>> new_ops.find_centering()
   'C'
 
-We can check if the space group is centric:
+We can check if the operations contain inversion:
 
 .. doctest::
 
-  >>> new_ops.is_centric()
+  >>> new_ops.is_centrosymmetric()
   False
 
 and we can tell which reflections are centric (as opposed to acentric; a reflection
@@ -522,7 +536,7 @@ Similarly, we can check for systematic absences:
   >>> new_ops.is_systematically_absent([1, 3, 2])
   False
 
-Another property, the epsilon factor ε, tells how many times the symmetry
+We can calculate the epsilon factor ε, which tells how many times the symmetry
 operations map the reflection onto itself:
 
 .. doctest::
@@ -542,6 +556,29 @@ We also have a function that calculates ε ignoring centering vectors
   >>> new_ops.epsilon_factor_without_centering([2, 0, 2])
   2
 
+We can create a new GroupOps object with the translational components of
+glide planes and screw axes removed. Such a new set of operations corresponds
+to a `symmorphic <https://dictionary.iucr.org/Symmorphic_space_groups>`_
+space group.
+
+.. doctest::
+
+  >>> new_ops.derive_symmorphic()  #doctest: +ELLIPSIS
+  <gemmi.GroupOps object at 0x...>
+  >>> gemmi.find_spacegroup_by_ops(_)
+  <gemmi.SpaceGroup("C 1 m 1")>
+
+And can add inversion (-x,-y,-z). This function either doubles the number
+of operations and returns True, or (if the group already has inversion)
+it returns False leaving the group unchanged:
+
+.. doctest::
+
+  >>> new_ops.add_inversion()
+  True
+  >>> gemmi.find_spacegroup_by_ops(new_ops)
+  <gemmi.SpaceGroup("C 1 2/c 1")>
+
 
 ASU
 ===
@@ -550,10 +587,71 @@ The asymmetric unit (ASU) of a space group is a non-redundant part of the unit c
 a part that can be used to generate the complete unit cell by application
 of the symmetry operations.
 
-Real space
-----------
+Direct space
+------------
 
-TODO
+ASU as a geometric shape can be defined by a set of inequalities -- planes
+that cut out a convex volume. Usually, crystallographic computations
+do not require ASU to be convex or even contiguous, so gemmi implements
+a more simplistic approach.
+
+.. _asu_brick:
+
+Similarly to other software packages, Gemmi uses ASU bricks --
+parallelepipeds (cuboids in fractional coordinates) that contains an ASU.
+A brick may contain more than one ASU if a brick-shaped ASU is not possible.
+Both the ASU and the brick can be chosen in many ways.
+For example, for P 21 21 21 Gemmi will use the following brick:
+
+.. doctest::
+
+  >>> brick = gemmi.find_asu_brick(gemmi.SpaceGroup('P 21 21 21'))
+  >>> brick.str()
+  '0<=x<1/2; 0<=y<=1/2; 0<=z<1'
+
+while the CCP4 and CCTBX libraries use, respectively, these definitions:
+
+|  0<=x<1; 0<=y<1; 0<=z<=1/4
+|  0<=x<1; 0<=y<=1/4; 0<=z<1
+
+The brick description is stored in an object of class AsuBrick.
+The lower boundary in always at 0 (inclusive), the upper one is defined by:
+
+.. doctest::
+
+  >>> brick.size  # multiplied by 24 to get integers
+  [12, 12, 24]
+  >>> brick.incl  # which upper boundaries are included
+  [False, True, False]
+
+This corresponds to the human-readable string:
+
+.. doctest::
+
+  >>> print(brick.str())
+  0<=x<1/2; 0<=y<=1/2; 0<=z<1
+
+AsuBrick has also function get_extent() that can be used to
+:ref:`set extent of a CCP4 map <set_extent>`:
+
+.. doctest::
+
+  >>> brick.get_extent()  #doctest: +ELLIPSIS
+  <gemmi.FractionalBox object at 0x...>
+  >>> _.minimum, _.maximum
+  (<gemmi.Fractional(-1e-09, -1e-09, -1e-09)>, <gemmi.Fractional(0.5, 0.5, 1)>)
+
+The exact maximum values of the FractionalBox are slightly above or below
+the values printed here, depending on whether the boundary is included.
+
+In crystallography, we often work with real-space data
+(such as electron density) on a 3D grid.
+In Gemmi, to make calculations simpler, such a grid (class Grid)
+spans over the whole unit cell.
+To process only points in an ASU we use an ASU mask -- this is described
+in the section about :ref:`MaskedGrid <masked_grid>`.
+Such an ASU, generated by ``masked_asu()``, is inside the ASU brick,
+but for some space groups it is not contiguous (which shouldn't be a problem).
 
 .. _reciprocal_asu:
 
@@ -597,6 +695,111 @@ the MTZ format, odd for reflections in the positive asu (I+),
 even for negative (I-).
 The second argument (GroupOps) is passed explicitly to avoid determining
 space group operations many times when ``to_asu()`` is in a loop.
+
+Twinning
+========
+
+Merohedral twinning (more correctly:
+`twinning by merohedry <https://dictionary.iucr.org/Twinning_by_merohedry>`_)
+has the twin operator belonging to the point group of the lattice
+but not to the point group of the crystal. So to find potential twinning
+operators we first need to find the symmetry of the lattice.
+
+Determination of the lattice symmetry in gemmi is based on the section 2.1
+in `P.H. Zwart et al (2006) <http://legacy.ccp4.ac.uk/newsletters/newsletter44/articles/explore_metric_symmetry.html>`_,
+which in turn is based on methods from
+`A. Lebedev et al. (2006) <https://doi.org/10.1107/S0907444905036759>`_
+and `Y. Le Page (1982) <https://doi.org/10.1107/S0021889882011959>`_.
+They:
+
+* determine a :ref:`reduced cell <niggli>`
+  (usually a Niggli cell is used, but it can be any Buerger cell),
+* find exact and approximate lattice symmetries, with a user-specified
+  threshold on the deviation from perfect symmetry,
+* use the found symmetries and the change-of-basis operator from the cell
+  reduction to obtain the lattice symmetry group in the original unit cell.
+
+
+In gemmi, lattice symmetry can be obtained with function
+find_lattice_symmetry() that takes a unit cell, centering, and obliquity
+threshold in degrees.
+The threshold limits the obliquity (δ angle as defined by Le Page)
+of 2-fold rotations that are used as generators for the symmetry group.
+The function returns a GroupOps object with all the lattice symmetry operations
+except inversion (you can call GroupOps.add_inversion() to add it).
+Rotations are in ``sym_ops`` and the cell centering vectors
+(unimportant) are in ``cen_ops``.
+
+.. doctest::
+
+  >>> cell = gemmi.UnitCell(174.22, 53.12, 75.17, 90.0, 115.29, 90.0)
+  >>> gemmi.find_lattice_symmetry(cell, centring='C', max_obliq=3)  #doctest: +ELLIPSIS
+  <gemmi.GroupOps object at 0x...>
+  >>> for op in _.sym_ops: print(op.triplet())
+  x,y,z
+  -x,y,-z
+  -x,-y,-2*x+z
+  x,-y,2*x-z
+
+Internally, find_lattice_symmetry() reduces the unit cell and calls
+lower-level function find_lattice_symmetry_r().
+Here is how we could do it manually:
+
+.. doctest::
+
+  >>> gv = gemmi.GruberVector(cell, 'C', track_change_of_basis=True)
+  >>> gv.niggli_reduce()
+  2
+  >>> reduced_cell = gv.get_cell()
+  >>> reduced_ops = gemmi.find_lattice_symmetry_r(reduced_cell, 3)
+  >>> reduced_ops.change_basis_forward(gv.change_of_basis)
+  >>> for op in reduced_ops.sym_ops: print(op.triplet())
+  x,y,z
+  -x,y,-z
+  -x,-y,-2*x+z
+  x,-y,2*x-z
+  >>> reduced_ops.cen_ops  # just for the record, centering is here:
+  [[0, 0, 0], [12, 12, 0]]
+
+The work of find_lattice_symmetry_r() begins with calling
+find_lattice_2fold_ops() that checks 2-fold symmetries enumerated by P. Zwart
+and returns the matching ones together with the δ angles:
+
+.. doctest::
+
+  >>> for (op, delta) in gemmi.find_lattice_2fold_ops(reduced_cell, max_obliq=3):
+  ...   print(op.triplet(), ' -> obliquity %.2f degrees' % delta)
+  x-z,-y,-z  -> obliquity 0.00 degrees
+  -x,y-z,-z  -> obliquity 0.27 degrees
+  -x+z,-y+z,z  -> obliquity 0.27 degrees
+
+The last two values (δ ≠ 0) are pseudo-symmetries that may result in
+twinning by pseudo-merohedry.
+
+After this introduction, here is the function that determines
+potential (pseudo-)merohedral twinning operators:
+
+.. doctest::
+
+  >>> gemmi.find_twin_laws(cell, gemmi.SpaceGroup('C2'), max_obliq=3, all_ops=False)
+  [<gemmi.Op("-x,-y,-2*x+z")>]
+
+With all_ops=False, this function returns only non-redundant twinning
+operators (coset representatives), which is usually what is needed.
+Note that since any of the equivalent operators can be returned,
+other implementations (class twin_laws in CCTBX, libT.f in CCP4)
+may return different ones.
+
+Above, we have one possible twinning. It is by pseudo-merohedry.
+If we wanted to see only twinning by merohedry, the threshold should be
+near zero, allowing only for numerical imprecision:
+
+.. doctest::
+
+  >>> gemmi.find_twin_laws(cell, gemmi.SpaceGroup('C2'), max_obliq=1e-6, all_ops=False)
+  []
+  >>> gemmi.find_twin_laws(cell, gemmi.SpaceGroup('P1'), max_obliq=1e-6, all_ops=False)
+  [<gemmi.Op("-x,y,-z")>]
 
 
 C++ Example

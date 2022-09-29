@@ -6,6 +6,8 @@
 #include "gemmi/pdb.hpp"
 #include "gemmi/calculate.hpp"
 #include "gemmi/neighbor.hpp"
+#include "gemmi/select.hpp"  // count_atom_sites
+#include "gemmi/remarks.hpp"  // read_metadata_from_remarks
 #include <benchmark/benchmark.h>
 
 static const char* path;
@@ -14,6 +16,16 @@ static void read_pdb_file(benchmark::State& state) {
   while (state.KeepRunning()) {
     gemmi::Structure st = gemmi::read_pdb_file(path);
     benchmark::DoNotOptimize(st);
+  }
+}
+
+static void read_pdb_remarks(benchmark::State& state) {
+  using namespace gemmi;
+  Structure st = read_pdb_file(path);
+  while (state.KeepRunning()) {
+    st.meta = gemmi::Metadata();
+    read_metadata_from_remarks(st);
+    benchmark::DoNotOptimize(st.meta);
   }
 }
 
@@ -87,6 +99,56 @@ static void fractional_box(benchmark::State& state) {
   }
 }
 
+static bool has_hydrogen_with_levels(const gemmi::Structure& st) {
+  for (const gemmi::Model& model : st.models)
+    for (const gemmi::Chain& chain : model.chains)
+      for (const gemmi::Residue& res : chain.residues)
+        for (const gemmi::Atom& atom : res.atoms)
+          if (atom.is_hydrogen())
+            return true;
+  return false;
+}
+
+static bool has_hydrogen_with_cra(const gemmi::Structure& st) {
+  for (const gemmi::Model& model : st.models)
+    for (gemmi::const_CRA cra : model.all())
+      if (cra.atom->is_hydrogen())
+        return true;
+  return false;
+}
+
+static bool has_hydrogen_with_selection(const gemmi::Structure& st) {
+  gemmi::Selection sel("[H,D]");
+  return count_atom_sites(st, &sel) != 0;
+}
+
+static void has_hydrogen1(benchmark::State& state) {
+  using namespace gemmi;
+  Structure st = read_pdb_file(path);
+  while (state.KeepRunning()) {
+    bool has_hydr = has_hydrogen_with_levels(st);
+    benchmark::DoNotOptimize(has_hydr);
+  }
+}
+
+static void has_hydrogen2(benchmark::State& state) {
+  using namespace gemmi;
+  Structure st = read_pdb_file(path);
+  while (state.KeepRunning()) {
+    bool has_hydr = has_hydrogen_with_cra(st);
+    benchmark::DoNotOptimize(has_hydr);
+  }
+}
+
+static void has_hydrogen3(benchmark::State& state) {
+  using namespace gemmi;
+  Structure st = read_pdb_file(path);
+  while (state.KeepRunning()) {
+    bool has_hydr = has_hydrogen_with_selection(st);
+    benchmark::DoNotOptimize(has_hydr);
+  }
+}
+
 int main(int argc, char** argv) {
   if (argc < 2) {
     printf("Call it with path to a pdb file as an argument.\n");
@@ -99,6 +161,7 @@ int main(int argc, char** argv) {
            st.name.c_str(), count_atom_sites(st.models.at(0)));
   }
   benchmark::RegisterBenchmark("read_pdb_file", read_pdb_file);
+  benchmark::RegisterBenchmark("read_pdb_remarks", read_pdb_remarks);
   benchmark::RegisterBenchmark("find_atom_image", find_atom_image);
   benchmark::RegisterBenchmark("neighbor_search_ctor", neighbor_search_ctor);
   benchmark::RegisterBenchmark("neighbor_search_find", neighbor_search_find);
@@ -106,6 +169,9 @@ int main(int argc, char** argv) {
                                neighbor_search_for_each);
   benchmark::RegisterBenchmark("calculate_box", calculate_box);
   benchmark::RegisterBenchmark("fractional_box", fractional_box);
+  benchmark::RegisterBenchmark("has_hydrogen1", has_hydrogen1);
+  benchmark::RegisterBenchmark("has_hydrogen2", has_hydrogen2);
+  benchmark::RegisterBenchmark("has_hydrogen3", has_hydrogen3);
   benchmark::Initialize(&argc, argv);
   benchmark::RunSpecifiedBenchmarks();
 }

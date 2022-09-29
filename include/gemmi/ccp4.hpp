@@ -12,7 +12,7 @@
 #include <cstring>   // for memcpy
 #include <array>
 #include <string>
-#include <typeinfo>  // for typeid
+#include <type_traits>  // for is_same
 #include <vector>
 #include "symmetry.hpp"
 #include "fail.hpp"      // for fail
@@ -177,6 +177,8 @@ struct Ccp4 : public Ccp4Base {
     }
   }
 
+  /// If the header is empty, prepare it; otherwise, update only MODE
+  /// and, if update_stats==true, also DMIN, DMAX, DMEAN and RMS.
   void update_ccp4_header(int mode=-1, bool update_stats=true) {
     if (mode > 2 && mode != 6)
       fail("Only modes 0, 1, 2 and 6 are supported.");
@@ -203,13 +205,13 @@ struct Ccp4 : public Ccp4Base {
   }
 
   static int mode_for_data() {
-    if (typeid(T) == typeid(std::int8_t))
+    if (std::is_same<T, std::int8_t>::value)
       return 0;
-    if (typeid(T) == typeid(std::int16_t))
+    if (std::is_same<T, std::int16_t>::value)
       return 1;
-    if (typeid(T) == typeid(float))
+    if (std::is_same<T, float>::value)
       return 2;
-    if (typeid(T) == typeid(std::uint16_t))
+    if (std::is_same<T, std::uint16_t>::value)
       return 6;
     return -1;
   }
@@ -270,7 +272,7 @@ struct Ccp4 : public Ccp4Base {
     }
   }
 
-  double setup(T default_value, MapSetup mode=MapSetup::Full);
+  void setup(T default_value, MapSetup mode=MapSetup::Full);
   void set_extent(const Box<Fractional>& box);
 
   template<typename Stream>
@@ -310,7 +312,7 @@ std::int8_t translate_map_point<float,std::int8_t>(float f) { return f != 0; }
 
 template<typename Stream, typename TFile, typename TMem>
 void read_data(Stream& f, std::vector<TMem>& content) {
-  if (typeid(TFile) == typeid(TMem)) {
+  if (std::is_same<TFile, TMem>::value) {
     size_t len = content.size();
     if (!f.read(content.data(), sizeof(TMem) * len))
       fail("Failed to read all the data from the map file.");
@@ -329,7 +331,7 @@ void read_data(Stream& f, std::vector<TMem>& content) {
 
 template<typename TFile, typename TMem>
 void write_data(const std::vector<TMem>& content, FILE* f) {
-  if (typeid(TMem) == typeid(TFile)) {
+  if (std::is_same<TMem, TFile>::value) {
     size_t len = content.size();
     if (std::fwrite(content.data(), sizeof(TFile), len, f) != len)
       sys_fail("Failed to write data to the map file");
@@ -380,21 +382,15 @@ void Ccp4<T>::read_ccp4_stream(Stream f, const std::string& path) {
 }
 
 template<typename T>
-double Ccp4<T>::setup(T default_value, MapSetup mode) {
-  double max_error = 0.0;
+void Ccp4<T>::setup(T default_value, MapSetup mode) {
   if (grid.axis_order == AxisOrder::XYZ || ccp4_header.empty())
-    return max_error;
+    return;
   // cell sampling does not change
-  std::array<int, 3> sampl = header_3i32(8);
+  const std::array<int, 3> sampl = header_3i32(8);
   // get old metadata
-  auto pos = axis_positions();
+  const std::array<int, 3> pos = axis_positions();
   std::array<int, 3> start = header_3i32(5);
   int end[3] = { start[0] + grid.nu, start[1] + grid.nv, start[2] + grid.nw };
-  // if it's sufficient to transpose the map, switch to ReorderOnly mode
-  if (mode != MapSetup::ReorderOnly &&
-      start[0] == 0 && start[1] == 0 && start[2] == 0 &&
-      end[pos[0]] == sampl[0] && end[pos[1]] == sampl[1] && end[pos[2]] == sampl[2])
-    mode = MapSetup::ReorderOnly;
   // set new metadata
   if (mode == MapSetup::ReorderOnly) {
     set_header_3i32(5, start[pos[0]], start[pos[1]], start[pos[2]]);
@@ -414,35 +410,31 @@ double Ccp4<T>::setup(T default_value, MapSetup mode) {
   }
   set_header_3i32(1, grid.nu, grid.nv, grid.nw); // NX, NY, NZ
   set_header_3i32(17, 1, 2, 3); // axes (MAPC, MAPR, MAPS)
-  // now set the data
-  std::vector<T> full(grid.point_count(), default_value);
-  int it[3];
-  int idx = 0;
-  for (it[2] = start[2]; it[2] < end[2]; it[2]++) // sections
-    for (it[1] = start[1]; it[1] < end[1]; it[1]++) // rows
-      for (it[0] = start[0]; it[0] < end[0]; it[0]++) { // cols
-        T val = grid.data[idx++];
-        size_t new_index = grid.index_s(it[pos[0]], it[pos[1]], it[pos[2]]);
-        full[new_index] = val;
-      }
-  grid.data = std::move(full);
-  if (mode == MapSetup::Full) {
-    grid.axis_order = AxisOrder::XYZ;
-    grid.symmetrize([&max_error, &default_value](T a, T b) {
-        if (impl::is_same(a, default_value))
-          return b;
-        if (!impl::is_same(b, default_value))
-          max_error = std::max(max_error, std::fabs(double(a - b)));
-        return a;
-    });
-  } else {
-    grid.axis_order = AxisOrder::Unknown;
-    if (pos[0] == 0 && pos[1] == 1 && pos[2] == 2 && full_cell())
-      grid.axis_order = AxisOrder::XYZ;
-  }
+  grid.axis_order = full_cell() ? AxisOrder::XYZ : AxisOrder::Unknown;
   if (grid.axis_order == AxisOrder::XYZ)
     grid.calculate_spacing();
-  return max_error;
+
+  // now set the data
+  {
+    std::vector<T> full(grid.point_count(), default_value);
+    int it[3];
+    int idx = 0;
+    for (it[2] = start[2]; it[2] < end[2]; it[2]++) // sections
+      for (it[1] = start[1]; it[1] < end[1]; it[1]++) // rows
+        for (it[0] = start[0]; it[0] < end[0]; it[0]++) { // cols
+          T val = grid.data[idx++];
+          size_t new_index = grid.index_s(it[pos[0]], it[pos[1]], it[pos[2]]);
+          full[new_index] = val;
+        }
+    grid.data = std::move(full);
+  }
+
+  if (mode == MapSetup::Full &&
+      // no need to apply symmetry if we started with the whole cell
+      (end[pos[0]] - start[pos[0]] < sampl[0] ||
+       end[pos[1]] - start[pos[1]] < sampl[1] ||
+       end[pos[2]] - start[pos[2]] < sampl[2]))
+    grid.symmetrize_nondefault(default_value);
 }
 
 template<typename T>

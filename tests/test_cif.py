@@ -44,6 +44,7 @@ class TestBlock(unittest.TestCase):
         self.assertEqual(block[4].pair[0], '_nonloop_b')
         self.assertEqual(block.get_index('_lb'), 5)
         self.assertEqual(block[5].loop.tags[1], '_lb')
+        self.assertIsNone(block[5].pair)
 
         rows = list(block.find('_nonloop_', ['a', 'b']))
         gc.collect()
@@ -86,10 +87,23 @@ class TestBlock(unittest.TestCase):
         block = doc[0]
         block.set_pair('_d', '9')
         block.set_pair('_b', '8')
-        self.assertEqual(block.find_pair('_a'), ['_a', '1'])
+        self.assertEqual(block.find_pair('_a'), ('_a', '1'))
         self.assertEqual(block.find_value('_b'), '8')
         self.assertEqual(block.find_value('_c'), '3')
         self.assertEqual(block.find_value('_d'), '9')
+
+    def test_set_pairs(self):
+        doc = cif.read_string('data_a _zza 0 _z_a 1 _Z_b 2 _z_C 3 _zzb 4')
+        block = doc[0]
+        expected = [('_zza', '0'), ('_z_a', '1'), ('_Z_b', '2'),
+                    ('_z_C', '3'), ('_zzb', '4')]
+        self.assertEqual([v.pair for v in block], expected)
+        block.set_pairs('_z_', {'1': 5})
+        expected.insert(4, ('_z_1', '5'))
+        self.assertEqual([v.pair for v in block], expected)
+        block.set_pairs('_z_', {'B': 10, 'c' : 11, 'a': 9})
+        expected[1:4] = [('_z_a', '9'), ('_z_B', '10'), ('_z_c', '11')]
+        self.assertEqual([v.pair for v in block], expected)
 
     def test_set_loop(self):
         block = cif.read_string('data_a _c.a 1 _c.b 2 _c.c 3 loop_ _cx.b 3')[0]
@@ -174,21 +188,25 @@ class TestBlock(unittest.TestCase):
             self.assertEqual(block.find_values('_d.two').str(1), '?')
             self.assertEqual(block.find_values('_d.two')[2], '.')
         check_d()
-        block.set_mmcif_category('_d', {
+        block.set_mmcif_category('_D', {
             'one': ('?', "'a b'", ';text\nfield\n;'),
             'two': ['-1', "'?'", '.']},
             raw=True)
+        self.assertEqual(set(block.find_mmcif_category('_d').tags),
+                         {'_D.one', '_D.two'})
         check_d()
         block.set_mmcif_category('_d', {
             'one': (None, "'a b'", ';text\nfield\n;'),
             'two': [-1, "'?'", False]},
             raw=True)
         check_d()
-        block.set_mmcif_category('_d', block.get_mmcif_category('_d'))
+        block.set_mmcif_category('_d', block.get_mmcif_category('_D'))
         check_d()
         block.set_mmcif_category('_d', block.get_mmcif_category('_d', raw=True),
                                  raw=True)
         check_d()
+        block.set_mmcif_category('_d', {})
+        self.assertEqual(block.find_mmcif_category('_d').width(), 0)
 
     def test_mmcif_file(self):
         path = os.path.join(os.path.dirname(__file__), '5i55.cif')
@@ -261,6 +279,16 @@ class TestBlock(unittest.TestCase):
             output_str = doc.as_string()
             self.assertEqual(input_str.replace(eol, '\n'), output_str)
 
+    def test_text_field_eol(self):
+        # use fragment of ma-bak-cepc-0017.cif
+        path = os.path.join(os.path.dirname(__file__), 'eol-test.cif')
+        with open(path) as f:
+            cif_string = f.read()
+        doc = cif.read_string(cif_string)
+        output = doc.as_string()
+        self.assertEqual([s.rstrip() for s in cif_string.splitlines()],
+                         output.splitlines())
+
     def test_write_style(self):
         doc = cif.read_string('data_one _x y')
         self.assertEqual(doc.as_string(), doc[0].as_string())
@@ -301,7 +329,7 @@ class TestBlock(unittest.TestCase):
 
         self.assertEqual(block.get_index('_nonlOOp_b'), 4)
         self.assertEqual(block.get_index('_lBBB'), 5)
-        self.assertEqual(block.find_pair('_Three'), ['_thrEE', '3'])
+        self.assertEqual(block.find_pair('_Three'), ('_thrEE', '3'))
 
 class TestQuote(unittest.TestCase):
     def test_quote(self):

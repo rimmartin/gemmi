@@ -206,13 +206,12 @@ and run a compiler:
 .. code-block:: none
 
     git clone https://github.com/project-gemmi/gemmi.git
-    c++ -std=c++11 -Igemmi/include -O2 my_program.cpp
+    c++ -Igemmi/include -O2 my_program.cpp
 
 Python
 ------
 
-Python module for Python 2.7 and 3.x
-can be installed with pip, as described in the
+Python module can be installed with pip, as described in the
 :ref:`Installation <install_py>` section.
 After installation ``pydoc gemmi.cif`` should list all classes and methods.
 
@@ -607,8 +606,8 @@ and a list of items (class Item):
   ...        elif item.frame is not None:
   ...            print('frame', item.frame)
   ...
-  pair ['_ndb_struct_conf_na.entry_id', '1PFE']
-  pair ['_ndb_struct_conf_na.feature', "'double helix'"]
+  pair ('_ndb_struct_conf_na.entry_id', '1PFE')
+  pair ('_ndb_struct_conf_na.feature', "'double helix'")
   loop <gemmi.cif.Loop 8 x 25>
   loop <gemmi.cif.Loop 5 x 43>
   loop <gemmi.cif.Loop 3 x 3>
@@ -685,7 +684,7 @@ To add a pair to the block, or modify an existing one, use::
 
   void Block::set_pair(const std::string& tag, std::string value)
 
-The value needs quoting, the passed argument needs to be already quoted
+If the value needs quoting, the passed argument needs to be already quoted
 (you may pass ``cif::quote(value)``).
 
 ----
@@ -721,7 +720,7 @@ Accessing name-value pairs:
 
   >>> # (1) tag and value
   >>> block.find_pair('_cell.length_a')
-  ['_cell.length_a', '39.374']
+  ('_cell.length_a', '39.374')
   >>> block.find_pair('_no_such_tag')  # return None
 
   >>> # (2) only value
@@ -732,7 +731,7 @@ Accessing name-value pairs:
   >>> # (3) Item
   >>> item = block.find_pair_item('_cell.length_c')
   >>> item.pair
-  ['_cell.length_c', '79.734']
+  ('_cell.length_c', '79.734')
   >>> item.line_number
   72
   >>> block.find_pair_item('_nothing')  # return None
@@ -743,6 +742,23 @@ use function ``set_pair``:
 .. doctest::
 
   >>> block.set_pair('_year', '2030')
+
+If a new item is added, it is placed at the end of the block.
+Then you can move it to a more appropriate position with ``move_item()``.
+Alternatively, you can use function ``set_pairs`` that takes a prefix and,
+when adding a new item, places it after the last item with the given prefix:
+
+.. doctest::
+
+  >>> block.set_pairs('_cell.', {'length_a_esd': '?',
+  ...                            'length_b_esd': '?',
+  ...                            'length_c_esd': '?'}, raw=True)
+
+(In C++ the equivalent is ``cif::ItemSpan(block, "_cell.").set_pair(…)``).
+This is recommended when editing mmCIF files, because all name-value pairs
+in the same category must be consecutive (an unwritten rule of the PDB).
+The argument ``raw`` has the same meaning as in the function
+:ref:`set_mmcif_category <set_mmcif_category>`.
 
 If the value needs quoting, it must be passed quoted:
 
@@ -1224,7 +1240,7 @@ As an example, let us swap two tag names
 
 .. literalinclude:: code/cif_cc.cpp
    :language: cpp
-   :lines: 32-33
+   :lines: 32-34
 
 .. doctest::
 
@@ -1344,6 +1360,8 @@ To disable this translation and get "raw" strings, add argument ``raw=True``.
   EPMR EPMR
   False .
   None ?
+
+.. _set_mmcif_category:
 
 ``set_mmcif_category()`` takes a category name and a dictionary (that
 maps tags to lists) and creates or replaces the corresponding category:
@@ -1533,7 +1551,7 @@ All these directory walking functions are powered by the
 Examples
 ========
 
-The examples here use C++11 or Python 2.7/3.x.
+The examples here use C++11 or Python.
 Full working code code can be found in the examples__ directory.
 
 If you have the Python ``gemmi`` module installed you should also have

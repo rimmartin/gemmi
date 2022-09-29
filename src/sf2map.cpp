@@ -5,7 +5,7 @@
 #include <stdio.h>
 #include <gemmi/ccp4.hpp>      // for Ccp4
 #include <gemmi/calculate.hpp> // for calculate_fractional_box
-#include <gemmi/select.hpp>    // for parse_cid
+#include <gemmi/select.hpp>    // for Selection
 #include <gemmi/read_coor.hpp> // for read_structure_gz
 #include "mapcoef.h"
 
@@ -62,7 +62,7 @@ void transform_sf_to_map(OptParser& p) {
                                      p.options[Verbose] ? stderr : nullptr);
   if (p.options[Verbose])
     fprintf(stderr, "Writing %s ...\n", map_path);
-  ccp4.update_ccp4_header(2, true);
+  ccp4.update_ccp4_header(2);
   if (p.options[Normalize]) {
     double mult = 1.0 / ccp4.hstats.rms;
     for (float& x : ccp4.grid.data)

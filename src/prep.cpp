@@ -11,6 +11,7 @@
 #include "gemmi/monlib.hpp"    // for MonLib, read_monomer_lib
 #include "gemmi/read_cif.hpp"  // for read_cif_gz
 #include "gemmi/read_coor.hpp" // for read_structure_gz
+#include "gemmi/contact.hpp"   // for ContactSearch
 
 #define GEMMI_PROG prep
 #include "options.h"
@@ -20,7 +21,8 @@ namespace cif = gemmi::cif;
 namespace {
 
 enum OptionIndex {
-  Split=4, Monomers, Libin, NoHydrogens, KeepHydrogens, NoZeroOccRestr
+  Split=4, Monomers, Libin, AutoCis, AutoLink,
+  NoZeroOccRestr, NoHydrogens, KeepHydrogens
 };
 
 const option::Descriptor Usage[] = {
@@ -40,14 +42,47 @@ const option::Descriptor Usage[] = {
     "  --monomers=DIR  \tMonomer library dir (default: $CLIBD_MON)." },
   { Libin, 0, "", "libin", Arg::Required,
     "  --libin=CIF  \tCustom additions to the monomer library." },
-  { NoHydrogens, 0, "H", "no-hydrogens", Arg::None,
-    "  -H, --no-hydrogens  \tRemove or do not add hydrogens." },
-  { KeepHydrogens, 0, "", "keep-hydrogens", Arg::None,
-    "  --keep-hydrogens  \tPreserve hydrogens from the input file." },
+  { AutoCis, 0, "", "auto-cis", Arg::YesNo,
+    "  --auto-cis=Y|N  \tAssign cis/trans ignoring CISPEP record (default: Y)." },
+  { AutoLink, 0, "", "auto-link", Arg::YesNo,
+    "  --auto-link=Y|N  \tFind links not included in LINK/SSBOND (default: N)." },
   //{ NoZeroOccRestr, 0, "", "no-zero-occ", Arg::None,
   //  "  --no-zero-occ  \tNo restraints for zero-occupancy atoms." },
+  { NoOp, 0, "", "", Arg::None,
+    "\nHydrogen options (default: remove and add on riding positions):" },
+  { NoHydrogens, 0, "H", "no-hydrogens", Arg::None,
+    "  -H, --no-hydrogens  \tRemove (and do not add) hydrogens." },
+  { KeepHydrogens, 0, "", "keep-hydrogens", Arg::None,
+    "  --keep-hydrogens  \tPreserve hydrogens from the input file." },
   { 0, 0, 0, 0, 0, 0 }
 };
+
+void assign_connections(gemmi::Model& model, gemmi::Structure& st) {
+  using namespace gemmi;
+  NeighborSearch ns(model, st.cell, 5.0);
+  ns.populate();
+  ContactSearch contacts(3.5f);
+  contacts.ignore = ContactSearch::Ignore::AdjacentResidues;
+  int counter = 0;
+  contacts.for_each_contact(ns, [&](const CRA& cra1, const CRA& cra2,
+                                    int image_idx, float dist_sq) {
+    float r1 = cra1.atom->element.covalent_r();
+    float r2 = cra2.atom->element.covalent_r();
+    if (dist_sq > sq((r1 + r2) + 0.5))
+      return;
+    if (st.find_connection_by_cra(cra1, cra2))
+      return;
+    Connection conn;
+    conn.name = "added" + std::to_string(++counter);
+    conn.type = Connection::Covale;
+    conn.asu = (image_idx == 0 ? Asu::Same : Asu::Different);
+    conn.partner1 = make_address(*cra1.chain, *cra1.residue, *cra1.atom);
+    conn.partner2 = make_address(*cra2.chain, *cra2.residue, *cra2.atom);
+    conn.reported_distance = std::sqrt(dist_sq);
+    printf("Added link %s - %s\n", atom_str(cra1).c_str(), atom_str(cra2).c_str());
+    st.connections.push_back(conn);
+  });
+}
 
 } // anonymous namespace
 
@@ -65,13 +100,12 @@ int GEMMI_MAIN(int argc, char **argv) {
   std::string input = p.coordinate_input_file(0);
   std::string output = p.nonOption(1);
   bool verbose = p.options[Verbose];
+
   try {
     if (verbose)
       printf("Reading %s ...\n", input.c_str());
     gemmi::Structure st = gemmi::read_structure_gz(input, gemmi::CoorFormat::Detect);
-    if (st.input_format == gemmi::CoorFormat::Pdb ||
-        st.input_format == gemmi::CoorFormat::ChemComp)
-      gemmi::setup_entities(st);
+    gemmi::setup_entities(st);
 
     if (st.models.empty()) {
       fprintf(stderr, "No models found in the input file.\n");
@@ -88,6 +122,12 @@ int GEMMI_MAIN(int argc, char **argv) {
                                                    model0.get_all_residue_names(),
                                                    gemmi::read_cif_gz,
                                                    libin);
+    if (p.is_yes(AutoCis, true))
+      assign_cis_flags(model0);
+
+    if (p.is_yes(AutoLink, false)) {
+      assign_connections(model0, st);
+    }
 
     if (verbose)
       printf("Preparing topology, hydrogens, restraints...\n");
@@ -104,27 +144,30 @@ int GEMMI_MAIN(int argc, char **argv) {
                                         &std::cerr, ignore_unknown_links);
 
     if (verbose)
-      printf("Preparing structure data...\n");
-    cif::Block crd = prepare_crd(st, *topo);
-    if (p.options[Split])
+      printf("Preparing data for Refmac...\n");
+    cif::Document crd = prepare_refmac_crd(st, *topo, monlib, h_change);
+    if (p.options[Split]) {
       output += ".crd";
-    if (verbose)
-      printf("Writing coordinates to: %s\n", output.c_str());
-    gemmi::Ofstream os(output);
-    write_cif_block_to_stream(os.ref(), crd, cif::Style::NoBlankLines);
-
-    if (verbose)
-      printf("Preparing restraint data...\n");
-    cif::Block rst = prepare_rst(*topo, monlib, st.cell);
-    if (p.options[Split])
-      output.replace(output.size()-3, 3, "rst");
-    if (verbose)
-      printf("Writing restraints to: %s\n", output.c_str());
-    if (p.options[Split])
-      os = gemmi::Ofstream(output);
-    else
-      os->write("\n\n", 2);
-    write_cif_block_to_stream(os.ref(), rst, cif::Style::NoBlankLines);
+      if (verbose)
+        printf("Writing %s\n", output.c_str());
+      gemmi::Ofstream os(output);
+      write_cif_block_to_stream(os.ref(), crd.blocks.at(0), cif::Style::NoBlankLines);
+      cif::Block rst = prepare_rst(*topo, monlib, st.cell);
+      if (p.options[Split])
+        output.replace(output.size()-3, 3, "rst");
+      if (verbose)
+        printf("Writing %s\n", output.c_str());
+      if (p.options[Split])
+        os = gemmi::Ofstream(output);
+      else
+        os->write("\n\n", 2);
+      write_cif_block_to_stream(os.ref(), crd.blocks.at(1), cif::Style::NoBlankLines);
+    } else {
+      if (verbose)
+        printf("Writing %s\n", output.c_str());
+      gemmi::Ofstream os(output);
+      write_cif_to_stream(os.ref(), crd, cif::Style::NoBlankLines);
+    }
   } catch (std::exception& e) {
     fprintf(stderr, "ERROR: %s\n", e.what());
     return 1;

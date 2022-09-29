@@ -38,6 +38,7 @@ std::vector<int> parse_comma_separated_ints(const char* arg);
 struct Arg: public option::Arg {
   static option::ArgStatus Required(const option::Option& option, bool msg);
   static option::ArgStatus Char(const option::Option& option, bool msg);
+  static option::ArgStatus YesNo(const option::Option& option, bool msg);
   static option::ArgStatus Choice(const option::Option& option, bool msg,
                                   const std::vector<const char*>& choices);
   static option::ArgStatus ColonPair(const option::Option& option, bool msg);
@@ -46,6 +47,9 @@ struct Arg: public option::Arg {
   static option::ArgStatus Float(const option::Option& option, bool msg);
   static option::ArgStatus CoorFormat(const option::Option& option, bool msg) {
     return Choice(option, msg, {"cif", "pdb", "json", "chemcomp"});
+  }
+  static option::ArgStatus CifStyle(const option::Option& option, bool msg) {
+    return Arg::Choice(option, msg, {"plain", "pdbx", "aligned"});
   }
 };
 
@@ -72,12 +76,22 @@ struct OptParser : option::Parser {
     return options[opt].namelen > 1 ? options[opt].name + 1
                                     : options[opt].desc->shortopt;
   }
+  // for Arg::YesNo
+  bool is_yes(int opt, bool default_) const {
+    if (options[opt])
+      return (options[opt].arg[0] & ~0x20) == 'Y';
+    return default_;
+  }
 };
 
 namespace gemmi { enum class CoorFormat; }
+namespace gemmi { namespace cif { enum class Style; } }
 
 // to be used with Arg::CoorFormat
 gemmi::CoorFormat coor_format_as_enum(const option::Option& format_in);
+
+// to be used with Arg::CifStyle
+gemmi::cif::Style cif_style_as_enum(const option::Option& cif_style);
 
 // can be used with paths_from_args_or_file()
 bool starts_with_pdb_code(const std::string& s);

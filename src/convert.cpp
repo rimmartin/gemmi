@@ -8,8 +8,7 @@
 #include "gemmi/to_pdb.hpp"    // for write_pdb, ...
 #include "gemmi/fstream.hpp"   // for Ofstream, Ifstream
 #include "gemmi/to_mmcif.hpp"  // for update_mmcif_block
-#include "gemmi/remarks.hpp"   // for read_metadata_from_remarks
-#include "gemmi/assembly.hpp"  // for ChainNameGenerator, change_to_assembly
+#include "gemmi/assembly.hpp"  // for ChainNameGenerator, transform_to_assembly
 #include "gemmi/pirfasta.hpp"  // for read_pir_or_fasta
 #include "gemmi/resinfo.hpp"   // for expand_protein_one_letter
 #include "gemmi/read_coor.hpp" // for read_structure_gz
@@ -47,18 +46,14 @@ struct ConvArg: public Arg {
   static option::ArgStatus NcsChoice(const option::Option& option, bool msg) {
     return Arg::Choice(option, msg, {"dup", "num", "x"});
   }
-
-  static option::ArgStatus StyleChoice(const option::Option& option, bool msg) {
-    return Arg::Choice(option, msg, {"plain", "pdbx", "aligned"});
-  }
 };
 
 enum OptionIndex {
   FormatIn=AfterCifModOptions, FormatOut, CifStyle, BlockName,
   ExpandNcs, AsAssembly,
-  RemoveH, RemoveWaters, RemoveLigWat, TrimAla, Select, Remove,
-  ShortTer, Linkr, CopyRemarks, Minimal, ShortenCN, RenameChain, SetSeq, Anisou,
-  SegmentAsChain, OldPdb, ForceLabel
+  RemoveH, RemoveWaters, RemoveLigWat, TrimAla, Select, Remove, ApplySymop,
+  ShortTer, Linkr, CopyRemarks, Minimal, ShortenCN, RenameChain, SetSeq,
+  SiftsNum, Biso, Anisou, SetCis, SegmentAsChain, OldPdb, ForceLabel
 };
 
 const option::Descriptor Usage[] = {
@@ -78,7 +73,7 @@ const option::Descriptor Usage[] = {
     "  --to=FORMAT  \tOutput format (default: from the file extension)." },
 
   { NoOp, 0, "", "", Arg::None, "\nCIF output options:" },
-  { CifStyle, 0, "", "style", ConvArg::StyleChoice,
+  { CifStyle, 0, "", "style", Arg::CifStyle,
     "  --style=STYLE  \tone of: default, pdbx (categories separated with #),"
                      " aligned (left-aligned columns)." },
   { BlockName, 0, "b", "block", Arg::Required,
@@ -114,10 +109,23 @@ const option::Descriptor Usage[] = {
     "  -s FILE  \tUse sequence from FILE (PIR or FASTA format), "
     "which must contain either one sequence (for all chains) "
     "or as many sequences as there are chains." },
+  { SiftsNum, 0, "", "sifts-num", Arg::None,
+    "  --sifts-num  \tUse SIFTS-mapped position in UniProt sequence as sequence ID." },
+  { Biso, 0, "B", "", Arg::Required,
+    "  -B MIN[:MAX]  \tSet isotropic B-factors to a single value or change values "
+      "out of given range to MIN/MAX." },
   { Anisou, 0, "", "anisou", ConvArg::AnisouChoice,
     "  --anisou=yes|no|heavy  \tAdd or remove ANISOU records." },
+  { SetCis, 0, "", "set-cispep", Arg::None,
+    "  --set-cispep  \tReset CISPEP records from omega angles." },
 
   { NoOp, 0, "", "", Arg::None, "\nMacromolecular operations:" },
+  { Select, 0, "", "select", Arg::Required,
+    "  --select=SEL  \tOutput only the selection." },
+  { Remove, 0, "", "remove", Arg::Required,
+    "  --remove=SEL  \tRemove the selection." },
+  { ApplySymop, 0, "", "apply-symop", Arg::Required,
+    "  --apply-symop=OP  \tApply symmetry operation (e.g. '-x,y+1/2,-z'." },
   { ExpandNcs, 0, "", "expand-ncs", ConvArg::NcsChoice,
     "  --expand-ncs=dup|num|x  \tExpand strict NCS from in MTRIXn or"
     " _struct_ncs_oper. New chain names are the same, have added numbers,"
@@ -132,11 +140,6 @@ const option::Descriptor Usage[] = {
     "  --remove-lig-wat  \tRemove ligands and waters." },
   { TrimAla, 0, "", "trim-to-ala", Arg::None,
     "  --trim-to-ala  \tTrim aminoacids to alanine." },
-  { Select, 0, "", "select", Arg::Required,
-    "  --select=CID  \tOutput only the selection." },
-  { Remove, 0, "", "remove", Arg::Required,
-    "  --remove=CID  \tRemove the selection." },
-
   { NoOp, 0, "", "", Arg::None,
     "\nWhen output file is -, write to standard output." },
   { 0, 0, 0, 0, 0, 0 }
@@ -161,16 +164,44 @@ void convert(gemmi::Structure& st,
     gemmi::fail("No atoms in the input file. Wrong file format?");
 
   if (st.input_format == CoorFormat::Pdb) {
-    gemmi::read_metadata_from_remarks(st);
     gemmi::setup_entities(st);
     if (!options[SetSeq])
       gemmi::assign_label_seq_id(st, options[ForceLabel]);
     if (!options[CopyRemarks])
       st.raw_remarks.clear();
+  } else {
+    // handles special tag from Refmac's mmCIF
+    expand_hd_mixture(st);
   }
 
-  if (options[Anisou]) {
-    char anisou_opt = options[Anisou].arg[0];
+  if (options[Select])
+    gemmi::Selection(options[Select].arg).remove_not_selected(st);
+  if (options[Remove])
+    gemmi::Selection(options[Remove].arg).remove_selected(st);
+  if (st.models.empty())
+    gemmi::fail("all models got removed");
+  if (options[ApplySymop]) {
+    gemmi::Op op = gemmi::parse_triplet(options[ApplySymop].arg);
+    transform_pos_and_adp(st, st.cell.op_as_transform(op));
+  }
+
+  if (options[Biso]) {
+    const char* start = options[Biso].arg;
+    char* endptr = nullptr;
+    float value1 = std::strtof(start, &endptr);
+    float value2 = value1;
+    if (endptr != start && *endptr == ':') {
+      start = endptr + 1;
+      value2 = std::strtof(start, &endptr);
+    }
+    if (endptr != start && *endptr == '\0')
+      assign_b_iso(st, value1, value2);
+    else
+      gemmi::fail("argument for -B should be a number or number:number");
+  }
+
+  for (const option::Option* opt = options[Anisou]; opt; opt = opt->next()) {
+    char anisou_opt = opt->arg[0];
     if (anisou_opt == 'n') {
       gemmi::remove_anisou(st);
     } else if (anisou_opt == 'y') {
@@ -185,13 +216,8 @@ void convert(gemmi::Structure& st,
     }
   }
 
-  if (options[Select])
-    gemmi::Selection(options[Select].arg).remove_not_selected(st);
-  if (options[Remove])
-    gemmi::Selection(options[Remove].arg).remove_selected(st);
-  if (st.models.empty())
-    gemmi::fail("all models got removed");
-
+  if (options[SetCis])
+    assign_cis_flags(st);
 
   for (const option::Option* opt = options[RenameChain]; opt; opt = opt->next()) {
     const char* sep = std::strchr(opt->arg, ':');
@@ -225,17 +251,47 @@ void convert(gemmi::Structure& st,
     gemmi::assign_label_seq_id(st, options[ForceLabel]);
   }
 
+  if (options[SiftsNum]) {
+    // Currently, we change seqid only for residues _pdbx_sifts_xref_db.unp_num
+    // set, and leave seqid for other residues.
+    // A more robust method would be to re-assign the whole polymer always when
+    // nup_num is set for any residue. This would mean:
+    // using insertion codes for insertions (up to 26 residues),
+    // renumbering ligands and waters if needed, and
+    // failing if we get duplicated seqid (multiple mappings for one chain).
+    bool changed = false;
+    for (gemmi::Model& model: st.models)
+      for (gemmi::Chain& chain : model.chains) {
+        const gemmi::Residue* prev_res = nullptr;
+        bool wrong_order = false;
+        for (gemmi::Residue& res : chain.residues) {
+          if (res.sifts_unp.res) {
+            res.seqid = gemmi::SeqId(res.sifts_unp.num, ' ');
+            if (prev_res && !(prev_res->seqid < res.seqid))
+              wrong_order = true;
+            changed = true;
+          }
+          prev_res = &res;
+        }
+        if (wrong_order) {
+          std::cerr << "WARNING: new sequence IDs are in wrong order in chain "
+                    << chain.name;
+          if (st.models.size() > 1)
+            std::cerr << " (model " << model.name << ')';
+          std::cerr << std::endl;
+        }
+      }
+    if (options[Verbose] && !changed)
+      std::cerr << "Option --sifts-num had no effect, "
+                   "it works only with _pdbx_sifts_xref_db.unp_num." << std::endl;
+  }
+
   HowToNameCopiedChain how = HowToNameCopiedChain::AddNumber;
   if (output_type == CoorFormat::Pdb)
     how = HowToNameCopiedChain::Short;
   if (options[AsAssembly]) {
-    gemmi::change_to_assembly(st, options[AsAssembly].arg, how,
-                              options[Verbose] ? &std::cerr : nullptr);
-    // After this change Assembly instructions can be outdated.
-    // Should they be preserved anyway or removed? Currently - removing.
-    st.assemblies.clear();
-    for (gemmi::Model& model : st.models)
-      gemmi::merge_atoms_in_expanded_model(model, gemmi::UnitCell());
+    std::ostream* out = options[Verbose] ? &std::cerr : nullptr;
+    gemmi::transform_to_assembly(st, options[AsAssembly].arg, how, out);
   }
 
   if (options[ExpandNcs]) {
@@ -287,13 +343,7 @@ void convert(gemmi::Structure& st,
     apply_cif_doc_modifications(doc, options);
 
     if (output_type == CoorFormat::Mmcif) {
-      auto style = cif::Style::PreferPairs;
-      if (options[CifStyle])
-        switch (options[CifStyle].arg[0]) {
-          case 'd'/*default*/: break;
-          case 'p'/*pdbx*/: style = cif::Style::Pdbx; break;
-          case 'a'/*aligned*/: style = cif::Style::Aligned; break;
-        }
+      auto style = cif_style_as_enum(options[CifStyle]);
       write_cif_to_stream(os.ref(), doc, style);
     } else /*output_type == CoorFormat::Mmjson*/ {
       cif::JsonWriter writer(os.ref());

@@ -313,68 +313,127 @@ struct SolventMasker {
 #endif
 };
 
+// TODO: add argument Box<Fractional> src_extent
 template<typename T>
-void interpolate_grid_of_aligned_model2(Grid<T>& dest, const Grid<T>& src,
-                                        const Transform& tr, const Model& dest_model,
-                                        double radius) {
-  // We need to keep track if the nearest atom is from model and image_idx=0.
-  // Then, before interpolating the map, we'll need delta between atom position
-  // and it's PBC image near the grid node.
-  struct NodeInfo {
-    double r_sq;
-    const Atom* a;
-  };
-
-  // populate node_list that assigns Atom or null to each node
-  std::vector<NodeInfo> node_list(dest.data.size(), NodeInfo{radius*radius, nullptr});
-  // cf. use_points_around()
-  int du = (int) std::ceil(radius / dest.spacing[0]);
-  int dv = (int) std::ceil(radius / dest.spacing[1]);
-  int dw = (int) std::ceil(radius / dest.spacing[2]);
-  dest.template check_size_for_points_in_box<true>(du, dv, dw, true);
-  const UnitCell& gcell = dest.unit_cell;
-  for (const Chain& chain : dest_model.chains)
-    for (const Residue& res : chain.residues)
-      for (const Atom& atom : res.atoms) {
-        Fractional frac0 = gcell.fractionalize(atom.pos);
-        dest.template do_use_points_in_box<true>(frac0, du, dv, dw,
-                      [&](T& point, const Position& delta) {
-                        double d2 = delta.length_sq();
-                        NodeInfo& ni = node_list[&point - dest.data.data()];
-                        if (d2 < ni.r_sq) {
-                          ni.r_sq = d2;
-                          ni.a = &atom;
-                        }
-                      });
-        // If a node is closer to symmetry mate than to an atom of the original
-        // molecule - mark it with a=nullptr so it's ignored.
-        // Most of the time is spent here, and it hardly makes any difference.
-        for (int n_im = 0; n_im != (int) gcell.images.size(); ++n_im) {
-          Fractional frac = gcell.images[n_im].apply(frac0);
-          dest.template do_use_points_in_box<true>(frac, du, dv, dw,
-                        [&](T& point, const Position& delta) {
-                          double d2 = delta.length_sq();
-                          NodeInfo& ni = node_list[&point - dest.data.data()];
-                          if (d2 < ni.r_sq) {
-                            ni.r_sq = d2;
-                            ni.a = nullptr;
-                          }
-                        });
-        }
-      }
-
-  // interpolate values for those nodes that have Atom assigned
+void interpolate_grid(Grid<T>& dest, const Grid<T>& src, const Transform& tr, int order=2) {
+  FTransform frac_tr = src.unit_cell.frac.combine(tr).combine(dest.unit_cell.orth);
   size_t idx = 0;
   for (int w = 0; w != dest.nw; ++w)
     for (int v = 0; v != dest.nv; ++v)
-      for (int u = 0; u != dest.nu; ++u, ++idx)
-        if (const Atom* a = node_list[idx].a) {
-          Position dest_pos = dest.get_position(u, v, w);
-          Fractional fdelta = gcell.fractionalize_difference(a->pos - dest_pos);
-          Position delta = gcell.orthogonalize_difference(fdelta.round());
-          Position src_pos(tr.apply(dest_pos + delta));
-          dest.data[idx] = src.interpolate_value(src_pos);
-        }
+      for (int u = 0; u != dest.nu; ++u, ++idx) {
+        Fractional dest_fr = dest.get_fractional(u, v, w);
+        Fractional src_fr = frac_tr.apply(dest_fr);
+        dest.data[idx] = src.interpolate(src_fr, order);
+      }
+}
+
+struct NodeInfo {
+  double dist_sq;  // distance from the nearest atom
+  bool found = false;  // the mask flag
+  //Element elem = El::X;
+  int u = 0, v = 0, w = 0;  // not normalized near-model grid coordinates
+};
+
+/// Populate NodeInfo grid for nodes near the model.
+inline void mask_with_node_info(Grid<NodeInfo>& mask, const Model& model, double radius) {
+  NodeInfo default_ni;
+  default_ni.dist_sq = radius * radius;
+  mask.fill(default_ni);
+  // cf. use_points_around()
+  int du = (int) std::ceil(radius / mask.spacing[0]);
+  int dv = (int) std::ceil(radius / mask.spacing[1]);
+  int dw = (int) std::ceil(radius / mask.spacing[2]);
+  mask.template check_size_for_points_in_box<true>(du, dv, dw, true);
+  for (const Chain& chain : model.chains)
+    for (const Residue& res : chain.residues)
+      for (const Atom& atom : res.atoms) {
+        Fractional frac0 = mask.unit_cell.fractionalize(atom.pos);
+        mask.template do_use_points_in_box<true>(frac0, du, dv, dw,
+                      [&](NodeInfo& ni, const Position& delta, int u, int v, int w) {
+                        double d2 = delta.length_sq();
+                        if (d2 < ni.dist_sq) {
+                          ni.dist_sq = d2;
+                          ni.found = true;
+                          //ni.elem = atom.element;
+                          ni.u = u;
+                          ni.v = v;
+                          ni.w = w;
+                        }
+                      });
+      }
+}
+
+/// Skip nodes that are closer to a symmetry mate of the model than
+/// to the original model. A node is closer to a symmetry mate when it has
+/// a symmetry image that is closer to the original model than the node.
+/// We ignore NCS here.
+inline void unmask_symmetry_mates(Grid<NodeInfo>& mask) {
+  std::vector<GridOp> symmetry_ops = mask.get_scaled_ops_except_id();
+  size_t idx = 0;
+  for (int w = 0; w != mask.nw; ++w)
+    for (int v = 0; v != mask.nv; ++v)
+      for (int u = 0; u != mask.nu; ++u, ++idx) {
+        NodeInfo& ni = mask.data[idx];
+        if (ni.found)
+          for (const GridOp& grid_op : symmetry_ops) {
+            std::array<int,3> t = grid_op.apply(u, v, w);
+            NodeInfo& im_ni = mask.data[mask.index_n(t[0], t[1], t[2])];
+            if (im_ni.found && im_ni.dist_sq > ni.dist_sq)
+              im_ni.found = false;
+          }
+      }
+}
+
+// TODO: rename this function to interpolate_grid_around_model()
+//       would it be better to use src_model rather than dest_model?
+template<typename T>
+void interpolate_grid_of_aligned_model2(Grid<T>& dest, const Grid<T>& src,
+                                        const Transform& tr,
+                                        const Model& dest_model, double radius,
+                                        int order=2) {
+  Grid<NodeInfo> mask;
+  mask.copy_metadata_from(dest);
+  mask_with_node_info(mask, dest_model, radius);
+  unmask_symmetry_mates(mask);
+  // Interpolate values for selected nodes.
+  FTransform frac_tr = src.unit_cell.frac.combine(tr.combine(dest.unit_cell.orth));
+  for (size_t idx = 0; idx != mask.data.size(); ++idx) {
+    const NodeInfo& ni = mask.data[idx];
+    if (ni.found) {
+      Fractional dest_fr = dest.get_fractional(ni.u, ni.v, ni.w);
+      Fractional src_fr = frac_tr.apply(dest_fr);
+      dest.data[idx] = src.interpolate(src_fr, order);
+    }
+  }
+}
+
+
+// add soft edge to 1/0 mask using raised cosine function
+template<typename T>
+void add_soft_edge_to_mask(Grid<T>& grid, double width) {
+  const double width2 = width * width;
+  const int du = (int) std::ceil(width / grid.spacing[0]);
+  const int dv = (int) std::ceil(width / grid.spacing[1]);
+  const int dw = (int) std::ceil(width / grid.spacing[2]);
+
+  for (int w = 0; w < grid.nw; ++w)
+    for (int v = 0; v < grid.nv; ++v)
+      for (int u = 0; u < grid.nu; ++u) {
+        size_t idx = grid.index_q(u, v, w);
+        if (grid.data[idx] >= 1e-3) continue;
+        double min_d2 = width2 + 1;
+        Fractional fctr = grid.get_fractional(u, v, w);
+        grid.template use_points_in_box<true>(fctr, du, dv, dw,
+                          [&](T& point, const Position& delta, int, int, int) {
+                            if (point > 0.999) {
+                              double d2 = delta.length_sq();
+                              if (d2 < min_d2)
+                                min_d2 = d2;
+                            }
+                          });
+        if (min_d2 < width2)
+          grid.data[idx] = T(0.5 + 0.5 * std::cos(pi() * std::sqrt(min_d2) / width));
+      }
 }
 
 } // namespace gemmi

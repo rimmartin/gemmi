@@ -77,6 +77,15 @@ class TestSymmetry(unittest.TestCase):
             self.assertEqual(op3.triplet(), triplet)
         self.assertEqual(gemmi.Op(' x , - y, + z ').triplet(), 'x,-y,z')
 
+    def test_triplet_style(self):
+        op = gemmi.parse_triplet('A,-B , C')
+        self.assertEqual(op.triplet('x'), 'x,-y,z')
+        self.assertEqual(op.triplet('a'), 'a,-b,c')
+        self.assertEqual(op.triplet('h'), 'h,-k,l')
+        self.assertEqual(op.triplet('X'), 'X,-Y,Z')
+        self.assertEqual(op.triplet('A'), 'A,-B,C')
+        self.assertEqual(op.triplet('H'), 'H,-K,L')
+
     def test_combine(self):
         a = gemmi.Op('x+1/3,z,-y')
         self.assertEqual(a.combine(a).triplet(), 'x+2/3,-y,-z')
@@ -145,7 +154,7 @@ class TestSymmetry(unittest.TestCase):
         self.assertEqual(len(gemmi_gops.sym_ops), cctbx_sg.order_p())
         self.assertEqual(len(gemmi_gops.cen_ops), cctbx_sg.n_ltr())
         self.assertEqual(len(gemmi_gops), cctbx_sg.order_z())
-        self.assertEqual(gemmi_gops.is_centric(), cctbx_sg.is_centric())
+        self.assertEqual(gemmi_gops.is_centrosymmetric(), cctbx_sg.is_centric())
         ctr = gemmi_gops.find_centering()
         self.assertEqual(ctr, cctbx_sg.conventional_centring_type_symbol())
         gemmi_triplets = set(m.triplet() for m in gemmi_gops)
@@ -176,10 +185,9 @@ class TestSymmetry(unittest.TestCase):
         for sg in gemmi.spacegroup_table():
             if sg.ccp4 != 0:
                 self.assertEqual(sg.ccp4 % 1000, sg.number)
-            if sg.operations().is_centric():
-                self.assertEqual(sg.laue_str(), sg.point_group_hm())
-            else:
-                self.assertNotEqual(sg.laue_str(), sg.point_group_hm())
+            is_laue = (sg.laue_str() == sg.point_group_hm())
+            self.assertEqual(sg.operations().is_centrosymmetric(), is_laue)
+            self.assertEqual(sg.is_centrosymmetric(), is_laue)
             if sgtbx:
                 hall = sg.hall.encode()
                 cctbx_sg = sgtbx.space_group(hall)
@@ -199,6 +207,17 @@ class TestSymmetry(unittest.TestCase):
                 self.assertEqual(s.hall().strip(), next(itb).hall)
             with self.assertRaises(StopIteration):
                 next(itb)
+
+    def test_symmorphic(self):
+        for sg in gemmi.spacegroup_table():
+            ops = sg.operations()
+            symmor_ops = ops.derive_symmorphic()
+            self.assertEqual(len(ops), len(symmor_ops))
+            symmor = gemmi.find_spacegroup_by_ops(symmor_ops)
+            self.assertTrue(symmor is not None)
+            self.assertTrue(symmor.is_symmorphic())
+            if sg.is_symmorphic():
+                self.assertEqual(sg.number, symmor.number)
 
     def test_find_spacegroup(self):
         self.assertEqual(gemmi.SpaceGroup('P21212').hm, 'P 21 21 2')
@@ -238,6 +257,13 @@ class TestSymmetry(unittest.TestCase):
         self.assertEqual(gops.find_centering(), 'C')
         self.assertEqual(len(gops), 4)
         self.assertEqual(gemmi.find_spacegroup_by_ops(gops).hm, 'C 1 c 1')
+
+    def test_add_inversion(self):
+        gops = gemmi.SpaceGroup(1).operations()
+        self.assertTrue(gops.add_inversion())
+        self.assertEqual(len(gops), 2)
+        self.assertEqual(gops.sym_ops, [gemmi.Op(), gemmi.Op('-x,-y,-z')])
+        self.assertFalse(gops.add_inversion())
 
     def change_basis(self, name_a, name_b, basisop_triplet):
         basisop = gemmi.Op(basisop_triplet)

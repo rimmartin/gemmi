@@ -9,6 +9,7 @@
 #include <utility>       // for pair
 #include "symmetry.hpp"  // for Op
 #include "unitcell.hpp"  // for UnitCell
+#include "cellred.hpp"   // for GruberVector
 
 namespace gemmi {
 
@@ -141,11 +142,11 @@ inline double calculate_cos_obliquity(const UnitCell& reduced_cell,
 }
 
 // Reduced cell can be from GruberVector::get_cell() after Niggli reduction.
-// max_obliq is max obliquity (delta) in radians as defined in Le Page (1982).
+// max_obliq is max obliquity (delta) in degrees as defined in Le Page (1982).
 inline std::vector<OpObliquity> find_lattice_2fold_ops(const UnitCell& reduced_cell,
                                                        double max_obliq) {
   std::vector<OpObliquity> ret;
-  const double cos_max_obliq = std::cos(max_obliq);
+  const double cos_max_obliq = std::cos(rad(max_obliq));
   for (const impl::TwoFoldData& row : impl::TwoFold::table) {
     Vec3 d_axis(row.ds_axis[0], row.ds_axis[1], row.ds_axis[2]);
     Vec3 r_axis(row.rs_axis[0], row.rs_axis[1], row.rs_axis[2]);
@@ -156,7 +157,7 @@ inline std::vector<OpObliquity> find_lattice_2fold_ops(const UnitCell& reduced_c
              row.matrix[3] * D, row.matrix[4] * D, row.matrix[5] * D,
              row.matrix[6] * D, row.matrix[7] * D, row.matrix[8] * D},
             {0, 0, 0}};
-      ret.emplace_back(op, std::acos(cos_delta));
+      ret.emplace_back(op, deg(std::acos(cos_delta)));
     }
   }
   std::sort(ret.begin(), ret.end(),
@@ -165,7 +166,7 @@ inline std::vector<OpObliquity> find_lattice_2fold_ops(const UnitCell& reduced_c
 }
 
 // Reduced cell can be from GruberVector::get_cell() after Niggli reduction.
-// max_obliq is max obliquity (delta) in radians as defined in Le Page (1982).
+// max_obliq is max obliquity (delta) in degrees as defined in Le Page (1982).
 // Returns lattice symmetry except inversion.
 inline GroupOps find_lattice_symmetry_r(const UnitCell& reduced_cell, double max_obliq) {
   std::vector<OpObliquity> gen = find_lattice_2fold_ops(reduced_cell, max_obliq);
@@ -184,7 +185,7 @@ inline GroupOps find_lattice_symmetry_r(const UnitCell& reduced_cell, double max
   return go;
 }
 
-// Returns lattice symmetry except inversion.
+// Returns lattice symmetry, but without inversion.
 inline GroupOps find_lattice_symmetry(const UnitCell& cell, char centring,
                                       double max_obliq) {
   GruberVector gv(cell, centring, true);
@@ -193,6 +194,31 @@ inline GroupOps find_lattice_symmetry(const UnitCell& cell, char centring,
   GroupOps gops = find_lattice_symmetry_r(reduced, max_obliq);
   gops.change_basis_forward(*gv.change_of_basis);
   return gops;
+}
+
+// Determine potential twinning operators.
+// Returns all operators or only unique ones (coset representatives).
+inline std::vector<Op> find_twin_laws(const UnitCell& cell,
+                                      const SpaceGroup* sg,
+                                      double max_obliq,
+                                      bool all_ops) {
+  if (sg == nullptr)
+    sg = &get_spacegroup_p1();
+  GroupOps go = sg->operations();
+  GroupOps lat_go = find_lattice_symmetry(cell, sg->centring_type(), max_obliq);
+  if (!go.has_same_centring(lat_go))
+    fail("find_twin_laws(): internal error");
+  std::vector<Op> ops;
+  size_t sg_symop_count = go.sym_ops.size();
+  for (const Op& op : lat_go.sym_ops)
+    if (!go.find_by_rotation(op.rot) &&
+        !go.find_by_rotation(op.negated_rot())) {
+      ops.push_back(op);
+      if (!all_ops)
+        for (size_t i = 1; i < sg_symop_count; ++i)
+          go.sym_ops.push_back(op * go.sym_ops[i]);
+    }
+  return ops;
 }
 
 } // namespace gemmi

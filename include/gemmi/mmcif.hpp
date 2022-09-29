@@ -358,6 +358,73 @@ inline void fill_residue_entity_type(Structure& st) {
       }
 }
 
+inline void read_sifts_unp(cif::Block& block, Structure& st) {
+  enum { kEntityId=0, kAsymId, kSeqIdOrdinal, kSeqId, kObserved,
+         kUnpRes, kUnpNum, kUnpAcc };
+  cif::Table table = block.find("_pdbx_sifts_xref_db.", {
+      "entity_id", "asym_id", "seq_id_ordinal", "seq_id", "observed",
+      "unp_res", "unp_num", "unp_acc"});
+  if (!table.ok())
+    return;
+  for (Model& model : st.models) {
+    Entity* ent = nullptr;
+    ResidueSpan polymer;
+    Residue* res = nullptr;
+    std::string unp_acc;
+    SiftsUnpResidue unp;
+    for (const auto row : table) {
+      if (row[kSeqIdOrdinal] != "1" || row[kObserved][0] != 'y')
+        continue;
+      if (cif::is_null(row[kUnpAcc]) || cif::is_null(row[kUnpNum]))
+        continue;
+      bool update_acc_index = false;
+      if (!ent || row[kEntityId] != ent->name) {
+        ent = st.get_entity(row[kEntityId]);
+        if (!ent)
+          fail("_pdbx_sifts_xref_db: entity_id not found: " + row[kEntityId]);
+        update_acc_index = true;
+      }
+      if (row[kUnpAcc] != unp_acc) {
+        unp_acc = row.str(kUnpAcc);
+        update_acc_index = true;
+      }
+      if (update_acc_index) {
+        auto& vec = ent->sifts_unp_acc;
+        auto it = std::find(vec.begin(), vec.end(), unp_acc);
+        unp.acc_index = std::uint8_t(it - vec.begin());
+        if (it == vec.end())
+          vec.push_back(unp_acc);
+      }
+      if (!polymer || row[kAsymId] != polymer.front().subchain) {
+        polymer = model.get_subchain(row[kAsymId]);
+        if (!polymer)
+          fail("_pdbx_sifts_xref_db: asym_id not found: " + row[kAsymId]);
+        res = polymer.begin();
+      } else if (res == polymer.end()) {
+        res = polymer.begin();
+      }
+      int label_seq = cif::as_int(row[kSeqId]);
+      if (res->label_seq != label_seq) {
+        res = polymer.begin();
+        while (res->label_seq != label_seq) {
+          ++res;
+          if (res == polymer.end())
+            fail("_pdbx_sifts_xref_db: seq_id not found: " + row[kSeqId]);
+        }
+      }
+      unp.res = cif::as_char(row[kUnpRes], '\0');
+      int num = cif::as_int(row[kUnpNum]);
+      unp.num = (std::uint16_t) num;
+      if (num != (int)unp.num)
+        fail("_pdbx_sifts_xref_db.unp_num: " + row[kUnpNum]);
+      while (res->label_seq == label_seq && res != polymer.end()) {
+        res->sifts_unp = unp;
+        ++res;
+      }
+    }
+  }
+}
+
 inline
 DiffractionInfo* find_diffrn(Metadata& meta, const std::string& diffrn_id) {
   for (CrystalInfo& crystal_info : meta.crystals)
@@ -565,7 +632,7 @@ inline Structure make_structure_from_block(const cif::Block& block_) {
          kLabelAsymId, kLabelEntityId, kLabelSeqId, kInsCode,
          kX, kY, kZ, kOcc, kBiso, kCharge,
          kAuthSeqId, kAuthCompId, kAuthAsymId, kAuthAtomId, kModelNum,
-         kCalcFlag, kTlsGroupId };
+         kCalcFlag, kTlsGroupId, kHdMixture };
   cif::Table atom_table = block.find("_atom_site.",
                                      {"id",
                                       "?group_PDB",
@@ -590,6 +657,7 @@ inline Structure make_structure_from_block(const cif::Block& block_) {
                                       "?pdbx_PDB_model_num",
                                       "?calc_flag",
                                       "?pdbx_tls_group_id",
+                                      "?ccp4_hd_mixture",
                                      });
   if (atom_table.length() != 0) {
     const int kAsymId = atom_table.first_of(kAuthAsymId, kLabelAsymId);
@@ -600,6 +668,8 @@ inline Structure make_structure_from_block(const cif::Block& block_) {
       fail("Neither _atom_site.label_comp_id nor auth_comp_id found");
     if (!atom_table.has_column(kAtomId))
       fail("Neither _atom_site.label_atom_id nor auth_atom_id found");
+
+    st.has_hd_mixture = atom_table.has_column(kHdMixture);
 
     Model *model = nullptr;
     Chain *chain = nullptr;
@@ -650,6 +720,8 @@ inline Structure make_structure_from_block(const cif::Block& block_) {
       // but in all the files it is a serial number; its value is not essential,
       // so we just ignore non-integer ids.
       atom.serial = string_to_int(row[kId], false);
+      if (st.has_hd_mixture)
+        atom.mixture = (float) cif::as_number(row[kHdMixture], 1.0);
       if (row.has2(kCalcFlag)) {
         const std::string& cf = row[kCalcFlag];
         if (cf[0] == 'c')
@@ -785,6 +857,7 @@ inline Structure make_structure_from_block(const cif::Block& block_) {
   st.sheets = read_sheets(block);
   read_connectivity(block, st);
   st.assemblies = read_assemblies(block);
+  read_sifts_unp(block, st);
 
   return st;
 }

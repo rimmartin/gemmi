@@ -20,7 +20,13 @@ using std::fprintf;
 
 namespace {
 
-enum OptionIndex { Hkl=4, NoHistory, NoSort };
+struct ReindexArg: public Arg {
+  static option::ArgStatus AsuChoice(const option::Option& option, bool msg) {
+    return Arg::Choice(option, msg, {"ccp4", "tnt"});
+  }
+};
+
+enum OptionIndex { Hkl=4, NoHistory, NoSort, Asu };
 
 const option::Descriptor Usage[] = {
   { NoOp, 0, "", "", Arg::None,
@@ -35,6 +41,8 @@ const option::Descriptor Usage[] = {
     "  --no-history  \tDo not add 'Reindexed with...' line to mtz HISTORY." },
   { NoSort, 0, "", "no-sort", Arg::None,
     "  --no-sort  \tDo not reorder reflections." },
+  { Asu, 0, "", "asu", ReindexArg::AsuChoice,
+    "  --asu=ccp4|tnt  \tWrite reflections in CCP4 (default) or TNT ASU." },
   { NoOp, 0, "", "", Arg::None,
     "\nInput file can be gzipped." },
   { 0, 0, 0, 0, 0, 0 }
@@ -49,17 +57,23 @@ int GEMMI_MAIN(int argc, char **argv) {
   bool verbose = p.options[Verbose];
   const char* input_path = p.nonOption(0);
   const char* output_path = p.nonOption(1);
-  if (!p.options[Hkl]) {
+  if (!p.options[Hkl] && !p.options[Asu]) {
     fprintf(stderr, "Specify transform with option --hkl\n");
     return 1;
   }
-  std::string hkl_arg = p.options[Hkl].arg;
   try {
-    gemmi::Op op = gemmi::parse_triplet(hkl_arg);
-    if (std::strpbrk(hkl_arg.c_str(), "xyzabcXYZABC"))
-      gemmi::fail("specify OP in terms of h, k and l");
-    if (op.tran != gemmi::Op::Tran{{0, 0, 0}})
-      gemmi::fail("reindexing operator should not have a translation");
+    std::string from_line = "From gemmi-reindex " GEMMI_VERSION;
+    gemmi::Op op;
+    if (p.options[Hkl]) {
+      std::string hkl_arg = p.options[Hkl].arg;
+      op = gemmi::parse_triplet(hkl_arg);
+      if (std::strpbrk(hkl_arg.c_str(), "xyzabcXYZABC"))
+        gemmi::fail("specify OP in terms of h, k and l");
+      if (op.tran != gemmi::Op::Tran{{0, 0, 0}})
+        gemmi::fail("reindexing operator should not have a translation");
+      gemmi::cat_to(from_line, " with [", hkl_arg, ']');
+    }
+
     gemmi::Mtz mtz;
     if (verbose) {
       fprintf(stderr, "Reading %s ...\n", input_path);
@@ -70,13 +84,16 @@ int GEMMI_MAIN(int argc, char **argv) {
     // for now we use mtz.warnings in reindex_mtz()
     mtz.warnings = stderr;
 
-    reindex_mtz(mtz, op, &std::cerr);
+    if (p.options[Hkl])
+      reindex_mtz(mtz, op, &std::cerr);
+
+    if (p.options[Asu] && mtz.is_merged())
+      mtz.ensure_asu(/*tnt_asu=*/p.options[Asu].arg[0] == 't');
 
     if (!p.options[NoSort])
       mtz.sort();
     if (!p.options[NoHistory])
-      mtz.history.emplace(mtz.history.begin(),
-                          "From gemmi-reindex " GEMMI_VERSION " with [" + hkl_arg + "]");
+      mtz.history.emplace(mtz.history.begin(), from_line);
     if (verbose)
       fprintf(stderr, "Writing %s ...\n", output_path);
     mtz.write_to_file(output_path);

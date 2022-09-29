@@ -9,6 +9,7 @@
 #include <gemmi/version.hpp>   // for GEMMI_VERSION
 #include <gemmi/util.hpp>   // for trim_str
 #include <gemmi/model.hpp>  // for gemmi::CoorFormat
+#include <gemmi/to_cif.hpp>  // for gemmi::cif::Style
 #include <gemmi/atox.hpp>   // for skip_blank
 
 using std::fprintf;
@@ -48,6 +49,17 @@ option::ArgStatus Arg::Char(const option::Option& option, bool msg) {
     return option::ARG_OK;
   if (msg)
     fprintf(stderr, "Argument of '%s' must be one character\n", option.name);
+  return option::ARG_ILLEGAL;
+}
+
+option::ArgStatus Arg::YesNo(const option::Option& option, bool msg) {
+  if (Required(option, msg) == option::ARG_ILLEGAL)
+    return option::ARG_ILLEGAL;
+  char first_letter = gemmi::alpha_up(option.arg[0]);
+  if (first_letter == 'Y' || first_letter == 'N')
+    return option::ARG_OK;
+  if (msg)
+    fprintf(stderr, "Argument of '%s' must be Y (yes) or N (no)\n", option.name);
   return option::ARG_ILLEGAL;
 }
 
@@ -235,6 +247,16 @@ gemmi::CoorFormat coor_format_as_enum(const option::Option& format_in) {
       format = gemmi::CoorFormat::ChemComp;
   }
   return format;
+}
+
+gemmi::cif::Style cif_style_as_enum(const option::Option& cif_style) {
+  if (cif_style)
+    switch (cif_style.arg[0]) {
+      // value for 'd' (default) is returned at end of this function
+      case 'p'/*pdbx*/: return gemmi::cif::Style::Pdbx;
+      case 'a'/*aligned*/: return gemmi::cif::Style::Aligned;
+    }
+  return gemmi::cif::Style::PreferPairs;
 }
 
 void print_version(const char* program_name) {
