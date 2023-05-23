@@ -1,10 +1,8 @@
 // Copyright 2018 Global Phasing Ltd.
 
-#define GEMMI_WRITE_IMPLEMENTATION
-#include "gemmi/sprintf.hpp"
+#include <sstream>  // for ostringstream
 #include "gemmi/to_mmcif.hpp"
 #include "gemmi/to_pdb.hpp"
-#include "gemmi/mtz.hpp"
 #include "gemmi/fstream.hpp"
 
 #include "common.h"
@@ -57,6 +55,7 @@ void add_write(py::module& m, py::class_<Structure>& structure) {
     DEF_BIT_PROPERTY(tls)
     DEF_BIT_PROPERTY(software)
     DEF_BIT_PROPERTY(group_pdb)
+    DEF_BIT_PROPERTY(auth_all)
     ;
 
   structure

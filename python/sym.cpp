@@ -187,6 +187,7 @@ void add_symmetry(py::module& m) {
     .def("is_centrosymmetric", &SpaceGroup::is_centrosymmetric)
     .def("is_reference_setting", &SpaceGroup::is_reference_setting)
     .def("centred_to_primitive", &SpaceGroup::centred_to_primitive)
+    .def("change_of_hand_op", &SpaceGroup::change_of_hand_op)
     .def("operations", &SpaceGroup::operations, "Group of operations")
     .def("switch_to_asu", [](const SpaceGroup& sg, py::array_t<int> hkl) {
         auto h = hkl.mutable_unchecked<2>();
@@ -200,6 +201,10 @@ void add_symmetry(py::module& m) {
             h(i, j) = hkl[j];
         }
     }, py::arg("miller_array").noconvert())
+    // In Python SpaceGroup class can't be created, we only use references to
+    // elements in spacegroup_tables::main.
+    .def("__eq__", [](const SpaceGroup& a, const SpaceGroup& b) { return &a == &b; },
+         py::is_operator())
     .def("__repr__", [](const SpaceGroup &self) {
         return "<gemmi.SpaceGroup(\"" + self.xhm() + "\")>";
     })

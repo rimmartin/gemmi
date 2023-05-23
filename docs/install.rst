@@ -7,24 +7,36 @@ Installation
 C++ library
 -----------
 
-It is a header-only library. You need to ensure that
-the ``include`` directory is in your include path
-when compiling your program. For example::
+Before version 0.6 gemmi was a header-only library.
+Many functions are still in headers. If you use only such function,
+you only need to ensure that the ``include`` directory is in your
+include path when compiling your program. For example::
 
     git clone https://github.com/project-gemmi/gemmi.git
     c++ -Igemmi/include -O2 my_program.cpp
 
-If you want Gemmi to uncompress gzipped files on the fly
-(i.e. if you ``#include <gemmi/gz.hpp>``)
-you will also need to link your program with the zlib library.
+Otherwise, you either need to build gemmi_cpp library,
+or add (selected) files from src/ to your project.
 
-If a file name is passed to Gemmi (through ``std::string``)
+If you use cmake, you can use find_package and externally installed gemmi::
+
+    find_package(gemmi 0.6 CONFIG REQUIRED)
+    add_executable(example example.cpp)
+    target_link_libraries(example PRIVATE gemmi::gemmi_cpp)
+
+or add gemmi as a git submodule and use add_subdirectory::
+
+    add_subdirectory(gemmi EXCLUDE_FROM_ALL)
+    add_executable(example example.cpp)
+    target_link_libraries(example PRIVATE gemmi_cpp)
+
+Note on Unicode: if a file name is passed to Gemmi (through ``std::string``)
 it is assumed to be in ASCII or UTF-8.
 
 .. _install_py:
 
 Python module
----------------------
+-------------
 
 From PyPI
 ~~~~~~~~~
@@ -83,18 +95,25 @@ Fortran and C bindings
 ----------------------
 
 The Fortran bindings are in early stage and are not documented yet.
-They use the ISO_C_BINDING module introduced in Fortran 2003.
+They use the ISO_C_BINDING module introduced in Fortran 2003
+and `shroud <https://github.com/LLNL/shroud>`_ (the latest version from git).
 You may see the ``fortran/`` directory to know what to expect.
-The bindings and usage examples can be compiled with CMake::
+This directory contains Makefile -- run make to built the bindings.
+(They are currently not integrated with the cmake build.)
+
+..
+ The bindings and usage examples can be compiled with CMake::
 
     cmake -D USE_FORTRAN=1 .
     make
 
 The C bindings are used only for making Fortran bindings,
 but they should be usable on their own.
-If you use cmake to build the project
-you get a static library ``libcgemmi.a`` that can be used from C,
-together with the :file:`fortran/*.h` headers.
+
+..
+ If you use cmake to build the project
+ you get a static library ``libcgemmi.a`` that can be used from C,
+ together with the :file:`fortran/*.h` headers.
 
 Program
 -------
@@ -105,7 +124,8 @@ Binaries
 ~~~~~~~~
 
 Binaries are distributed with the CCP4 suite and with Global Phasing software.
-They are also included in
+They are also in `PyPI <https://pypi.org/project/gemmi-program/>`_
+(``pip install gemmi-program``) and
 `conda-forge packages <https://anaconda.org/conda-forge/gemmi/files>`_.
 
 The very latest builds (as well as a little older ones)
@@ -147,8 +167,8 @@ Credits
 
 This project is using code from a number of third-party open-source projects.
 
-Projects used in the C++ library and included under
-``include/gemmi/third_party/``:
+Projects used in the C++ library, included under
+``include/gemmi/third_party/`` (if used in headers) or ``third_party/``:
 
 * `PEGTL <https://github.com/taocpp/PEGTL/>`_ -- library for creating PEG
   parsers. License: MIT.
@@ -173,8 +193,8 @@ Code derived from the following projects is used in the library:
   in ``fprime.hpp`` is based on CromerLiberman code from Larch.
   License: 2-clause BSD.
 
-Projects included under ``third_party/``, not used in the library itself,
-but used in command-line utilities, python bindings or tests:
+Projects included under ``third_party/`` that are not used in the library
+itself, but are used in command-line utilities, python bindings or tests:
 
 * `The Lean Mean C++ Option Parser <http://optionparser.sourceforge.net/>`_ --
   command-line option parser. License: MIT.
@@ -190,7 +210,8 @@ Not distributed with Gemmi:
 
 * `pybind11 <https://github.com/pybind/pybind11>`_ -- used for creating
   Python bindings. License: 3-clause BSD.
-* `cctbx <https://github.com/cctbx/cctbx_project>`_ -- used in tests and
+* `cctbx <https://github.com/cctbx/cctbx_project>`_ -- used in tests
+  (if cctbx is not present, these tests are skipped) and
   in scripts that generated space group data and 2-fold twinning operations.
   License: 3-clause BSD.
 

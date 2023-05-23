@@ -84,6 +84,22 @@ void add_mol(py::module& m) {
 
   py::bind_map<info_map_type>(m, "InfoMap");
 
+  py::class_<CRA>(m, "CRA")
+    .def_readonly("chain", &CRA::chain)
+    .def_readonly("residue", &CRA::residue)
+    .def_readonly("atom", &CRA::atom)
+    .def("atom_matches", [](const CRA& self, const AtomAddress& addr) {
+        return atom_matches(self, addr);
+    })
+    .def("__str__", [](const CRA& self) { return atom_str(self); })
+    .def("__repr__", [](const CRA& self) {
+        return tostr("<gemmi.CRA ", atom_str(self), '>');
+    });
+
+  py::class_<CraProxy>(m, "CraGenerator")
+    .def("__iter__", [](CraProxy& self) { return py::make_iterator(self); },
+         py::keep_alive<0, 1>());
+
   py::class_<Structure> structure(m, "Structure");
   structure
     .def(py::init<>())
@@ -95,10 +111,12 @@ void add_mol(py::module& m) {
     .def_readwrite("input_format", &Structure::input_format)
     .def_readwrite("entities", &Structure::entities)
     .def_readwrite("connections", &Structure::connections)
+    .def_readwrite("cispeps", &Structure::cispeps)
     .def_readwrite("helices", &Structure::helices)
     .def_readwrite("sheets", &Structure::sheets)
     .def_readwrite("assemblies", &Structure::assemblies)
     .def_readwrite("meta", &Structure::meta)
+    .def_readwrite("has_d_fraction", &Structure::has_d_fraction)
     .def_readwrite("info", &Structure::info)
     .def_readwrite("raw_remarks", &Structure::raw_remarks)
     .def("find_spacegroup", &Structure::find_spacegroup)
@@ -121,6 +139,9 @@ void add_mol(py::module& m) {
     .def("__delitem__", &remove_children<Structure>)
     .def("__delitem__", &Structure::remove_model, py::arg("name"))
     .def("__setitem__", &set_child<Structure, Model>)
+    .def("find_connection_by_cra", [](Structure& st, CRA cra1, CRA cra2) {
+        return st.find_connection_by_cra(cra1, cra2);
+    }, py::return_value_policy::reference_internal)
     .def("find_connection", &Structure::find_connection,
          py::arg("partner1"), py::arg("partner2"),
          py::return_value_policy::reference_internal)
@@ -136,17 +157,17 @@ void add_mol(py::module& m) {
     .def("setup_cell_images", &Structure::setup_cell_images)
     .def("add_entity_types", (void (*)(Structure&, bool)) &add_entity_types,
          py::arg("overwrite")=false)
-    .def("assign_subchains", (void (*)(Structure&, bool)) &assign_subchains,
-         py::arg("overwrite")=false)
+    .def("assign_subchains", &assign_subchains,
+         py::arg("force")=false, py::arg("fail_if_unknown")=true)
     .def("ensure_entities", &ensure_entities)
     .def("deduplicate_entities", &deduplicate_entities)
     .def("setup_entities", &setup_entities)
-    .def("assign_cis_flags", assign_cis_flags<Structure>)
     .def("remove_alternative_conformations",
          remove_alternative_conformations<Structure>)
     .def("remove_hydrogens", remove_hydrogens<Structure>)
     .def("remove_waters", remove_waters<Structure>)
     .def("remove_ligands_and_waters", remove_ligands_and_waters<Structure>)
+    .def("store_deuterium_as_fraction", &store_deuterium_as_fraction)
     .def("assign_serial_numbers", (void (*)(Structure&)) &assign_serial_numbers)
     .def("shorten_chain_names", &shorten_chain_names)
     .def("expand_ncs", &expand_ncs, py::arg("how"))
@@ -163,22 +184,6 @@ void add_mol(py::module& m) {
     });
     add_assign_label_seq_id(structure);
     add_write(m, structure);
-
-  py::class_<CRA>(m, "CRA")
-    .def_readonly("chain", &CRA::chain)
-    .def_readonly("residue", &CRA::residue)
-    .def_readonly("atom", &CRA::atom)
-    .def("atom_matches", [](const CRA& self, const AtomAddress& addr) {
-        return atom_matches(self, addr);
-    })
-    .def("__str__", [](const CRA& self) { return atom_str(self); })
-    .def("__repr__", [](const CRA& self) {
-        return tostr("<gemmi.CRA ", atom_str(self), '>');
-    });
-
-  py::class_<CraProxy>(m, "CraGenerator")
-    .def("__iter__", [](CraProxy& self) { return py::make_iterator(self); },
-         py::keep_alive<0, 1>());
 
   pyModel
     .def(py::init<std::string>())
@@ -301,7 +306,6 @@ void add_mol(py::module& m) {
          py::keep_alive<0, 1>())
     .def("get_subchain", (ResidueSpan (Chain::*)(const std::string&)) &Chain::get_subchain,
          py::keep_alive<0, 1>())
-    .def("has_subchains_assigned", &has_subchains_assigned)
     .def("previous_residue", &Chain::previous_residue,
          py::return_value_policy::reference_internal)
     .def("next_residue", &Chain::next_residue,
@@ -460,6 +464,7 @@ void add_mol(py::module& m) {
 
   py::enum_<CalcFlag>(m, "CalcFlag")
     .value("NotSet", CalcFlag::NotSet)
+    .value("NoHydrogen", CalcFlag::NoHydrogen)
     .value("Determined", CalcFlag::Determined)
     .value("Calculated", CalcFlag::Calculated)
     .value("Dummy", CalcFlag::Dummy);
@@ -475,6 +480,7 @@ void add_mol(py::module& m) {
     .def_readwrite("b_iso", &Atom::b_iso)
     .def_readwrite("aniso", &Atom::aniso)
     .def_readwrite("serial", &Atom::serial)
+    .def_readwrite("fraction", &Atom::fraction)
     .def_readwrite("calc_flag", &Atom::calc_flag)
     .def_readwrite("flag", &Atom::flag)
     .def_readwrite("tls_group_id", &Atom::tls_group_id)
@@ -515,6 +521,8 @@ void add_mol(py::module& m) {
                             HowToNameCopiedChain how) {
         return make_assembly(assembly, model, how, nullptr);
   });
+  m.def("merge_atoms_in_expanded_model", &merge_atoms_in_expanded_model,
+        py::arg("model"), py::arg("cell"), py::arg("max_dist")=0.2);
 
   // select.hpp
   py::class_<FilterProxy<Selection, Model>> pySelectionModelsProxy(m, "SelectionModelsProxy");

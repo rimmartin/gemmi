@@ -404,8 +404,8 @@ struct Block {
   std::string name;
   std::vector<Item> items;
 
-  explicit Block(const std::string& name_) : name(name_) {}
-  Block() {}
+  explicit Block(const std::string& name_);
+  Block();
 
   void swap(Block& o) { name.swap(o.name); items.swap(o.items); }
   // access functions
@@ -458,6 +458,7 @@ struct Block {
   // mmCIF specific functions
   std::vector<std::string> get_mmcif_category_names() const;
   Table find_mmcif_category(std::string cat);
+  bool has_mmcif_category(std::string cat) const;
 
   Loop& init_mmcif_loop(std::string cat, std::vector<std::string> tags) {
     ensure_mmcif_category(cat);  // modifies cat
@@ -757,6 +758,9 @@ inline void Table::convert_pair_to_loop() {
   loop_item->set_value(std::move(new_item));
 }
 
+inline Block::Block(const std::string& name_) : name(name_) {}
+inline Block::Block() {}
+
 inline const Item* Block::find_pair_item(const std::string& tag) const {
   std::string lctag = gemmi::to_lower(tag);
   for (const Item& i : items)
@@ -982,6 +986,14 @@ inline Table Block::find_mmcif_category(std::string cat) {
   return Table{nullptr, *this, indices, cat.length()};
 }
 
+inline bool Block::has_mmcif_category(std::string cat) const {
+  ensure_mmcif_category(cat);
+  cat = gemmi::to_lower(cat);
+  for (const Item& i : items)
+    if (i.has_prefix(cat))
+      return true;
+  return false;
+}
 
 struct Document {
   std::string source;

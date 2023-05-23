@@ -5,9 +5,11 @@
 #ifndef GEMMI_SEQID_HPP_
 #define GEMMI_SEQID_HPP_
 
+#include <climits>    // for INT_MIN
 #include <cstdlib>    // for strtol
 #include <stdexcept>  // for invalid_argument
 #include <string>
+#include "util.hpp"   // for cat
 
 namespace gemmi {
 
@@ -48,9 +50,9 @@ template<int N> struct OptionalInt {
 };
 
 struct SeqId {
-  using OptionalNum = OptionalInt<-999>;
+  using OptionalNum = OptionalInt<INT_MIN>;
 
-  OptionalNum num; // sequence number
+  OptionalNum num;   // sequence number
   char icode = ' ';  // insertion code
 
   SeqId() = default;
@@ -65,7 +67,7 @@ struct SeqId {
   }
 
   bool operator==(const SeqId& o) const {
-    return num == o.num && (icode | 0x20) == (o.icode | 0x20);
+    return num == o.num && ((icode ^ o.icode) & ~0x20) == 0;
   }
   bool operator!=(const SeqId& o) const { return !operator==(o); }
   bool operator<(const SeqId& o) const {
@@ -98,7 +100,7 @@ struct ResidueId {
     return seqid == o.seqid && name == o.name;
   }
   bool operator==(const ResidueId& o) const { return matches(o); }
-  std::string str() const { return seqid.str() + "(" + name + ")"; }
+  std::string str() const { return cat(seqid.str(), '(', name, ')'); }
 };
 
 inline std::string atom_str(const std::string& chain_name,

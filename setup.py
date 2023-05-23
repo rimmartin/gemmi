@@ -15,7 +15,7 @@ def read_version_from_header():
     with open('include/gemmi/version.hpp') as f:
         for line in f:
             if line.startswith('#define GEMMI_VERSION '):
-                return line.split()[2].strip('"dev')
+                return line.split()[2].strip('"')
 
 __version__ = read_version_from_header()
 
@@ -51,7 +51,12 @@ ext_modules = [
                   ['gemmi', 'align', 'ccp4', 'chemcomp', 'cif', 'custom',
                    'elem', 'hkl', 'grid', 'meta', 'mol', 'monlib', 'mtz',
                    'read', 'recgrid', 'scaling', 'search', 'sf', 'sym',
-                   'topo', 'unitcell', 'write']],
+                   'topo', 'unitcell', 'write']]
+              + ['src/%s.cpp' % name for name in
+                  ['sprintf', 'mtz', 'to_pdb', 'to_mmcif', 'mtz2cif',
+                   'read_cif', 'mmcif', 'mmread_gz', 'calculate', 'eig3',
+                   'resinfo', 'polyheur', 'monlib', 'topo', 'riding_h', 'crd',
+                   'xds_ascii', 'assembly']],
               include_dirs=zlib_include_dirs + [
                   'include',
                   'third_party',
@@ -91,11 +96,11 @@ def cpp_flag(compiler):
 
     The newer version is prefered over c++11 (when it is available).
     """
-    flags = ['-std=c++17', '-std=c++14', '-std=c++11']
+    flags = ['-std=c++20', '-std=c++17', '-std=c++14', '-std=c++11']
 
     # C++17 on Mac requires higher -mmacosx-version-min, skip it for now
     if sys.platform == 'darwin':
-        flags.pop(0)
+        flags = flags[2:]
 
     for flag in flags:
         if has_flag(compiler, flag):
@@ -163,6 +168,15 @@ class BuildExt(build_ext):
             ext.extra_link_args = link_opts
         build_ext.build_extensions(self)
 
+def long_description():
+    readme_path = os.path.join(os.path.dirname(__file__), "README.md")
+    with open(readme_path) as f:
+        lines = f.readlines()
+    # replace badges from README with this info:
+    lines[:2] = ['Note: command-line program gemmi is in PyPI\n',
+                 '[gemmi-program](https://pypi.org/project/gemmi-program/).\n']
+    return ''.join(lines)
+
 setup(
     name='gemmi',
     version=__version__,
@@ -170,18 +184,8 @@ setup(
     author_email='wojdyr@gmail.com',
     url='https://project-gemmi.github.io/',
     description='library for structural biology',
-    long_description='''\
-    Library for macromolecular crystallography and structural bioinformatics.
-    For working with coordinate files (mmCIF, PDB, mmJSON),
-    refinement restraints (monomer library), electron density maps (CCP4),
-    and crystallographic reflection data (MTZ, SF-mmCIF). It understands
-    crystallographic symmetries, it knows how to switch between the real
-    and reciprocal space and it can do a few other things.
-
-    The setup.py script builds only Python extension.
-    Use cmake to build also a command-line program.
-    ''',
-    long_description_content_type='text/plain',
+    long_description=long_description(),
+    long_description_content_type='text/markdown',
     libraries=build_libs,
     ext_modules=ext_modules,
     packages=['gemmi-examples'],

@@ -79,7 +79,15 @@ template<typename T, typename M> std::vector<T> model_subchains(M* model) {
 enum class CoorFormat { Unknown, Detect, Pdb, Mmcif, Mmjson, ChemComp };
 
 /// corresponds to _atom_site.calc_flag in mmCIF
-enum class CalcFlag : signed char { NotSet=0, Determined, Calculated, Dummy };
+enum class CalcFlag : signed char {
+  // NoHydrogen is the same as NotSet; it's used internally to mark atoms
+  // which should not have riding hydrogens.
+  // NB: add_cif_atoms() relies on this order.
+  NotSet=0, NoHydrogen, Determined, Calculated, Dummy
+};
+
+/// helper type used for Structure::shortened_ccd_codes
+struct OldToNew { std::string old, new_; };
 
 /// options affecting how pdb file is read
 struct PdbReadOptions {
@@ -109,7 +117,7 @@ struct Atom {
   char flag = '\0';  // a custom flag
   short tls_group_id = -1;
   int serial = 0;
-  float mixture = 0.f;  // custom value, one use is Refmac's ccp4_hd_mixture
+  float fraction = 0.f;  // custom value, one use is Refmac's ccp4_deuterium_fraction
   Position pos;
   float occ = 1.0f;
   // ADP - in MX it's usual to give isotropic ADP as B and anisotropic as U
@@ -134,7 +142,9 @@ struct Atom {
   std::string padded_name() const {
     std::string s;
     const char* el = element.uname();
-    if (el[1] == '\0' && el[0] == alpha_up(name[0]) && name.size() < 4)
+    if (el[1] == '\0' &&
+        (el[0] == alpha_up(name[0]) || (is_hydrogen() && alpha_up(name[0]) == 'H')) &&
+        name.size() < 4)
       s += ' ';
     s += name;
     return s;
@@ -170,9 +180,9 @@ struct Residue : public ResidueId {
   OptionalNum label_seq;  // mmCIF _atom_site.label_seq_id
   EntityType entity_type = EntityType::Unknown;
   char het_flag = '\0';   // 'A' = ATOM, 'H' = HETATM, 0 = unspecified
-  bool is_cis = false;    // bond to the next residue marked as cis
   char flag = '\0';       // custom flag
   SiftsUnpResidue sifts_unp;  // UniProt reference from SIFTS
+  short group_idx = 0;        // ignore - internal variable
   std::vector<Atom> atoms;
 
   Residue() = default;
@@ -185,7 +195,6 @@ struct Residue : public ResidueId {
     res.label_seq = label_seq;
     res.entity_type = entity_type;
     res.het_flag = het_flag;
-    res.is_cis = is_cis;
     res.flag = flag;
     return res;
   }
@@ -201,17 +210,14 @@ struct Residue : public ResidueId {
   }
 
   // default values accept anything
-  const Atom* find_atom(const std::string& atom_name, char altloc,
-                        El el=El::X) const {
-    for (const Atom& a : atoms)
-      if (a.name == atom_name && a.altloc_matches(altloc)
-          && (el == El::X || a.element == el))
+  Atom* find_atom(const std::string& atom_name, char altloc, El el=El::X) {
+    for (Atom& a : atoms)
+      if (a.name == atom_name && a.altloc_matches(altloc) && (el == El::X || a.element == el))
         return &a;
     return nullptr;
   }
-  Atom* find_atom(const std::string& atom_name, char altloc, El el=El::X) {
-    const Residue* const_this = this;
-    return const_cast<Atom*>(const_this->find_atom(atom_name, altloc, el));
+  const Atom* find_atom(const std::string& atom_name, char altloc, El el=El::X) const {
+    return const_cast<Residue*>(this)->find_atom(atom_name, altloc, el);
   }
 
   std::vector<Atom>::iterator find_atom_iter(const std::string& atom_name,
@@ -236,28 +242,12 @@ struct Residue : public ResidueId {
   }
 
   // short-cuts to access peptide backbone atoms
-  const Atom* get_ca() const {
-    static const std::string CA("CA");
-    return find_atom(CA, '*', El::C);
-  }
-  const Atom* get_c() const {
-    static const std::string C("C");
-    return find_atom(C, '*', El::C);
-  }
-  const Atom* get_n() const {
-    static const std::string N("N");
-    return find_atom(N, '*', El::N);
-  }
-
+  const Atom* get_ca() const { return find_atom("CA", '*', El::C); }
+  const Atom* get_c() const { return find_atom("C", '*', El::C); }
+  const Atom* get_n() const { return find_atom("N", '*', El::N); }
   // short-cuts to access nucleic acid atoms
-  const Atom* get_p() const {
-    static const std::string P("P");
-    return find_atom(P, '*', El::P);
-  }
-  const Atom* get_o3prim() const {
-    static const std::string P("O3'");
-    return find_atom(P, '*', El::O);
-  }
+  const Atom* get_p() const { return find_atom("P", '*', El::P); }
+  const Atom* get_o3prim() const { return find_atom("O3'", '*', El::O); }
 
   bool same_conformer(const Residue& other) const {
     return atoms.empty() || other.atoms.empty() ||
@@ -265,7 +255,9 @@ struct Residue : public ResidueId {
            other.find_atom(other.atoms[0].name, atoms[0].altloc) != nullptr;
   }
 
-  // convenience function that duplicates functionality from resinfo.hpp
+  /// Convenience function that duplicates functionality from resinfo.hpp.
+  /// Returns true for HOH and DOD (and old alternative names of HOH),
+  /// but not for OH and H3O/D3O.
   bool is_water() const {
     if (name.length() != 3)
       return false;
@@ -823,6 +815,7 @@ struct Model {
   ConstCraProxy all() const { return {chains}; }
 
   Atom* find_atom(const AtomAddress& address) { return find_cra(address).atom; }
+  const Atom* find_atom(const AtomAddress& address) const { return find_cra(address).atom; }
 
   std::array<int, 3> get_indices(const Chain* c, const Residue* r,
                                  const Atom* a) const {
@@ -868,23 +861,27 @@ struct Structure {
   std::vector<NcsOp> ncs;
   std::vector<Entity> entities;
   std::vector<Connection> connections;
+  std::vector<CisPep> cispeps;
+  std::vector<ModRes> mod_residues;
   std::vector<Helix> helices;
   std::vector<Sheet> sheets;
   std::vector<Assembly> assemblies;
   Metadata meta;
 
   CoorFormat input_format = CoorFormat::Unknown;
-  bool has_hd_mixture = false;  // uses Refmac's ccp4_hd_mixture
+  bool has_d_fraction = false;  // uses Refmac's ccp4_deuterium_fraction
 
-  // Store ORIGXn / _database_PDB_matrix.origx*
+  /// Store ORIGXn / _database_PDB_matrix.origx*
   bool has_origx = false;
   Transform origx;
 
-  // Minimal metadata with keys being mmcif tags: _entry.id, _cell.Z_PDB, ...
+  /// Minimal metadata with keys being mmcif tags: _entry.id, _cell.Z_PDB, ...
   std::map<std::string, std::string> info;
-  // original REMARK records stored if the file was read from the PDB format
+  /// Mapping of long (4+) CCD codes (residue names) to PDB-compatible ones
+  std::vector<OldToNew> shortened_ccd_codes;
+  /// original REMARK records stored if the file was read from the PDB format
   std::vector<std::string> raw_remarks;
-  // simplistic resolution value from/for REMARK 2
+  /// simplistic resolution value from/for REMARK 2
   double resolution = 0;
 
   const SpaceGroup* find_spacegroup() const {
@@ -908,6 +905,9 @@ struct Structure {
 
   Model* find_model(const std::string& model_name) {
     return impl::find_or_null(models, model_name);
+  }
+  const Model* find_model(const std::string& model_name) const {
+    return const_cast<Structure*>(this)->find_model(model_name);
   }
   Model& find_or_add_model(const std::string& model_name) {
     return impl::find_or_add(models, model_name);
@@ -942,6 +942,9 @@ struct Structure {
 
   Connection* find_connection_by_name(const std::string& conn_name) {
     return impl::find_or_null(connections, conn_name);
+  }
+  const Connection* find_connection_by_name(const std::string& conn_name) const {
+    return const_cast<Structure*>(this)->find_connection_by_name(conn_name);
   }
 
   Connection* find_connection_by_cra(const const_CRA& cra1,

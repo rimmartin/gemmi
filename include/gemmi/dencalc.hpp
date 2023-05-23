@@ -70,10 +70,11 @@ inline double get_minimum_b(const Model& model) {
   for (const Chain& chain : model.chains)
     for (const Residue& residue : chain.residues)
       for (const Atom& atom : residue.atoms) {
+        if (atom.occ == 0) continue;
         double b = atom.b_iso;
-        if (!atom.aniso.nonzero()) {
+        if (atom.aniso.nonzero()) {
           std::array<double,3> eig = atom.aniso.calculate_eigenvalues();
-          b = std::min(std::min(eig[0], eig[1]), eig[2]);
+          b = std::min(std::min(eig[0], eig[1]), eig[2]) * u_to_b();
         }
         if (b < b_min)
           b_min = b;
@@ -164,7 +165,7 @@ struct DensityCalculator {
     grid.data.clear();
     double spacing = requested_grid_spacing();
     if (spacing > 0)
-      grid.set_size_from_spacing(spacing, true);
+      grid.set_size_from_spacing(spacing, GridSizeRounding::Up);
     else if (grid.point_count() > 0)
       grid.fill(0.);
     else
@@ -197,7 +198,7 @@ struct DensityCalculator {
 
   double mott_bethe_factor(const Miller& hkl) const {
     double inv_d2 = grid.unit_cell.calculate_1_d2(hkl);
-    double factor = -1. / (2 * pi() * pi() * bohrradius()) / inv_d2;
+    double factor = -mott_bethe_const() / inv_d2;
     return blur == 0 ? factor : factor * reciprocal_space_multiplier(inv_d2);
   }
 };

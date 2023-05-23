@@ -8,324 +8,6 @@
 Structure analysis
 ##################
 
-.. _niggli:
-
-Reduced unit cells
-==================
-
-The reduction finds special bases of lattices. In practice, these bases are
-found by removing lattice centering (i.e. obtaining a primitive cell)
-and using a prescribed interative procedure.
-As it is worded in the International Tables for Crystallography A 3.1.1.4 (2016),
-"the reduction procedures employ metrical properties to develop a sequence
-of basis transformations which lead to a *reduced basis* and *reduced cell*".
-
-There are three popular unit cell reductions:
-
-- the Minkowski-Buerger reduction, which minimizes *a*\ +\ *b*\ +\ *c*
-  (in special cases multiple, up to 6 different bases have the same
-  minimal sum *a*\ +\ *b*\ +\ *c*),
-- the Eisenstein-Niggli reduction, which adds extra conditions
-  to the previous one and makes the result unique,
-- the Selling-Delaunay reduction (the second name is alternatively
-  transliterated as Delone), which minimizes
-  *a*:sup:`2`\ +\ *b*:sup:`2`\ +\ *c*:sup:`2`\ +\ (*a*\ +\ *b*\ +\ *c*)\ :sup:`2`.
-
-First names here (Minkowski, Eisenstein, Selling) belong to mathematicians
-working on the reduction of quadratic forms.
-The second names -- to people applying this math to crystallography.
-Usually, we use only the second name. The Niggli reduction is the most
-popular of the three.
-
-Niggli and Buerger reductions
------------------------------
-
-Gemmi implements separately the Niggli and Buerger reductions.
-The procedures are iterative. Most of the unit cells from the PDB
-need only 1-2 iterations to get reduced (1.3 on average, not counting
-the *normalization* steps as separate iterations).
-On the other hand, one can always construct a primitive cell with extremely
-long basis vectors that would require hundreds of iterations.
-The Buerger reduction is simpler and faster than Niggli,
-but Niggli is also fast -- one iteration takes less than 1μs.
-
-Gemmi implementation is based on the algorithms published by B. Gruber
-in the 1970's: Gruber,
-`Acta Cryst. A29, 433 <https://doi.org/10.1107/S0567739473001063>`_ (1973)
-for the Buerger reduction, and Křivý & Gruber,
-`Acta Cryst. A32, 297 <https://doi.org/10.1107/S0567739476000636>`_ (1976)
-for the Niggli reduction.
-Additionally, the Niggli reduction is using ε to compare numbers, as proposed
-by Grosse-Kunstleve *et al*,
-`Acta Cryst. A60, 1 <https://doi.org/10.1107/S010876730302186X>`_ (2004).
-
-Gruber's algorithms use vector named G\ :sup:`6`, which is
-`somewhat similar <https://dictionary.iucr.org/Metric_tensor>`_
-to the metric tensor. G\ :sup:`6` has six elements named:
-A, B, C, ξ (xi), η (eta) and ζ (zeta), which correspond to:
-
-    (**a**:sup:`2`, **b**:sup:`2`, **c**:sup:`2`, 2\ **b**\ ⋅\ **c**, 2\ **a**\ ⋅\ **c**, 2\ **a**\ ⋅\ **b**)
-
-Gemmi has a class named GruberVector that contains these six numbers
-and reduction algorithms implemented as methods.
-This class can be initialized with UnitCell and SpaceGroup:
-
-.. doctest::
-
-  >>> cell = gemmi.UnitCell(63.78, 63.86, 124.40, 90.0, 90.0, 90.0)
-  >>> sg = gemmi.SpaceGroup('I 2 2 2')
-  >>> gv = gemmi.GruberVector(cell, sg)
-
-or with 6-tuple corresponding to G\ :sup:`6` of a primitive cell:
-
-.. doctest::
-
-  >>> g6_param = gv.parameters  # obtain such a tuple
-  >>> gemmi.GruberVector(g6_param)
-  <gemmi.GruberVector((5905.34, 5905.34, 5905.34, -7742.79, -7732.57, 3664.69))>
-
-We can check if G\ :sup:`6` already corresponds to a Buerger and Niggli cell:
-
-.. doctest::
-
-  >>> gv.is_niggli()
-  False
-  >>> gv.is_buerger()
-  False
-
-We can access the G\ :sup:`6` parameters as a tuple:
-
-.. doctest::
-
-  >>> gv.parameters
-  (5905.337, 5905.337, 5905.337, -7742.7856, -7732.5744, 3664.686)
-
-and obtain the corresponding cell parameters (with angles in degrees):
-
-.. doctest::
-  :skipif: sys.platform == 'win32'  # the last digit differs with MSVC
-
-  >>> gv.cell_parameters()  # primitive cell
-  (76.84619053668177, 76.84619053668177, 76.84619053668177, 130.96328311485175, 130.89771578326727, 71.92353702711762)
-
-And most importantly, we can reduce the cell.
-``niggli_reduce()`` performs the Niggli reduction on G\ :sup:`6`,
-returning the number of iterations it took:
-
-.. doctest::
-
-  >>> gv.niggli_reduce()
-  3
-
-Now G\ :sup:`6` contains smaller numbers:
-
-.. doctest::
-
-  >>> gv
-  <gemmi.GruberVector((4067.89, 4078.10, 5905.34, -4078.10, -4067.89, -0.00))>
-
-To create a new UnitCell with reduced parameters do:
-
-.. doctest::
-
-  >>> gemmi.UnitCell(* gv.cell_parameters())
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-
-or use a helper method:
-
-.. doctest::
-
-  >>> gv.get_cell()
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-
-Similarly, we can perform the Buerger reduction:
-
-.. doctest::
-
-  >>> gv = gemmi.GruberVector(g6_param)
-  >>> gv.buerger_reduce()
-  3
-
-In this case both functions gave the same result.
-
-.. doctest::
-
-  >>> gv.is_niggli()
-  True
-  >>> gv.get_cell()
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-
-Functions ``niggli_reduce``, ``is_niggli`` and ``is_buerger`` can take optional
-parameter ``epsilon`` (default: 1e-9) that is used for comparing numbers.
-Additionally, ``niggli_reduce`` can take ``iteration_limit`` (default: 100).
-To check how the computations would work without ε we can set it to 0:
-
-.. doctest::
-
-  >>> gv.is_buerger(epsilon=0)
-  True
-  >>> gv.is_niggli(epsilon=0)
-  False
-  >>> gv.niggli_reduce(epsilon=0, iteration_limit=100)
-  6
-  >>> gv.get_cell()
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-
-Here, the Niggli conditions were initially found not fulfilled, because
-one expression that should be non-negative was about -5e-13.
-A few extra iterations sorted it out (without any real changes),
-but it's not always the case -- that's why we have ``iteration_limit``
-to prevent infinite loop.
-
-The original Křivý-Gruber algorithm doesn't calculate the change-of-basis
-transformation that leads to the reduced cell. In gemmi,
-this transformation can be obtained as proposed in the 2004 paper
-of Grosse-Kunstleve *et al*: the change-of-basis matrix is updated
-in each step together with the Gruber vector.
-Updating this matrix makes the reduction twice slower
-(but it's still in tens of ns, so it's fast enough for any purpose).
-To track the change of basis, pass the following option:
-
-.. doctest::
-
-  >>> gv = gemmi.GruberVector(cell, sg, track_change_of_basis=True)
-
-After the Niggli reduction, the transformation will be available
-in the ``change_of_basis`` property:
-
-.. doctest::
-
-  >>> gv.niggli_reduce()
-  3
-  >>> cob = gv.change_of_basis
-  >>> cob
-  <gemmi.Op("x-z/2,y-z/2,z/2")>
-
-This operator transforms Niggli cell to the original cell
-(so it's actually *the inverse* of the reduction change-of-basis):
-
-.. doctest::
-
-  >>> gv.get_cell().changed_basis_forward(cob, set_images=False)
-  <gemmi.UnitCell(63.78, 63.86, 124.4, 90, 90, 90)>
-
-and the other way around:
-
-.. doctest::
-
-  >>> cell.changed_basis_backward(cob, set_images=False)
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-
-Currently, tracking is implemented only for the Niggli reduction,
-not for the Buerger reduction.
-
-Selling-Delaunay reduction
---------------------------
-
-Gemmi implementation is based on
-
-- section `3.1.2.3 <https://onlinelibrary.wiley.com/iucr/itc/Ac/ch3o1v0001/>`_
-  "Delaunay reduction and standardization" in the Tables vol. A (2016),
-- Patterson & Love (1957), "Remarks on the Delaunay reduction",
-  `Acta Cryst. 10, 111 <https://doi.org/10.1107/S0365110X57000328>`_,
-- Andrews *et al* (2019),
-  "Selling reduction versus Niggli reduction for crystallographic lattices",
-  `Acta Cryst. A75, 115 <https://doi.org/10.1107/S2053273318015413>`_.
-
-Similarly to the GruberVector, here we have a class named SellingVector
-that contains the six elements of S\ :sup:`6` -- the inner products
-among the four vectors **a**, **b**, **c**
-and **d**\ =–(\ **a**\ +\ **b**\ +\ **c**\ ):
-
-    *s*\ :sub:`23`\ =\ **b**\ ⋅\ **c**,
-    *s*\ :sub:`13`\ =\ **a**\ ⋅\ **c**,
-    *s*\ :sub:`12`\ =\ **a**\ ⋅\ **b**,
-    *s*\ :sub:`14`\ =\ **a**\ ⋅\ **d**,
-    *s*\ :sub:`24`\ =\ **b**\ ⋅\ **d**,
-    *s*\ :sub:`34`\ =\ **c**\ ⋅\ **d**.
-
-SellingVector can be initialized with UnitCell and SpaceGroup:
-
-.. doctest::
-
-  >>> sv = gemmi.SellingVector(cell, sg)
-
-or with a tuple of six numbers S\ :sup:`6`:
-
-.. doctest::
-
-  >>> sv.parameters
-  (-3871.3928, -3866.2872, 1832.343, -3871.3928, -3866.2872, 1832.343)
-  >>> gemmi.SellingVector(_)
-  <gemmi.SellingVector((-3871.39, -3866.29, 1832.34, -3871.39, -3866.29, 1832.34))>
-
-Similarly as in the previous section, we can check if S\ :sup:`6`
-already corresponds to a Delaunay cell:
-
-.. doctest::
-
-  >>> sv.is_reduced()
-  False
-
-Each reduction step decreases Σ\ **b**\ :sub:`i`:sup:`2`
-(**b**\ :sub:`1`, **b**\ :sub:`2`, **b**\ :sub:`3` and **b**\ :sub:`4`
-are alternative symbols for **a**, **b**, **c** and **d**).
-The sum Σ\ **b**\ :sub:`i`:sup:`2` can be calculated with:
-
-.. doctest::
-
-  >>> sv.sum_b_squared()
-  23621.348
-
-Similarly to ``niggli_reduce()``, the Selling reduction procedure takes
-optional arguments ``epsilon`` and ``iteration_limit``
-and returns the iteration count:
-
-.. doctest::
-
-  >>> sv.reduce()
-  2
-
-Now we can check the result:
-
-.. doctest::
-
-  >>> sv
-  <gemmi.SellingVector((-2033.94, -2033.94, -1832.34, -2039.05, -2039.05, 0.00))>
-  >>> sv.is_reduced()
-  True
-  >>> sv.sum_b_squared()
-  19956.662
-
-Now, the corresponding four vectors can be in any order.
-We may sort them so that *a*\ ≤\ *b*\ ≤\ *c*\ ≤\ *d*:
-
-.. doctest::
-
-  >>> sv.sort()
-  >>> sv
-  <gemmi.SellingVector((-2039.05, -2033.94, 0.00, -2033.94, -2039.05, -1832.34))>
-
-Finally, we can get the corresponding UnitCell:
-
-.. doctest::
-
-  >>> gemmi.UnitCell(* sv.cell_parameters())
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-  >>> sv.get_cell()  # helper function that does the same
-  <gemmi.UnitCell(63.78, 63.86, 76.8462, 114.551, 114.518, 90)>
-
-S\ :sup:`6` can be used to calculate G\ :sup:`6`, and the other way around:
-
-.. doctest::
-
-  >>> sv.gruber()
-  <gemmi.GruberVector((4067.89, 4078.10, 5905.34, -4078.10, -4067.89, 0.00))>
-  >>> _.selling()
-  <gemmi.SellingVector((-2039.05, -2033.94, 0.00, -2033.94, -2039.05, -1832.34))>
-
-TBC
-
 .. _neighbor_search:
 
 Neighbor search
@@ -342,7 +24,7 @@ on the search radius. Each cell stores the list of atoms in its area;
 these lists are used for fast lookup of atoms.
 
 In Gemmi the cell technique is implemented in a class named ``NeighborSearch``.
-The implementation works with both crystal and non-crystal system and:
+The implementation works with both crystal and non-crystal systems and:
 
 * handles crystallographic symmetry (including non-standard settings with
   origin shift that are present in a couple hundreds of PDB entries),
@@ -360,22 +42,22 @@ The implementation works with both crystal and non-crystal system and:
 
 Note that while an atom can be bonded with its own symmetric image,
 it sometimes happens that an atom meant to be on a special position
-is slightly off, and its symmetric images represent the same atom
-(so we may have four nearby images each with occupancy 0.25).
+is slightly off, and its symmetric images represent the same atom (so after
+expanding the symmetry we may have four nearby images each with occupancy 0.25).
 Such images will be returned by the NeighborSearch class as neighbors
 and need to be filtered out by the users.
 
 The NeighborSearch constructor divides the unit cell into bins.
-For this it needs to know the maximum radius that will be used in searches,
+For this it needs to know the search radius for which we optimize bins,
 as well as the unit cell. Since the system may be non-periodic,
 the constructor also takes the model as an argument -- it is used to
 calculate the bounding box for the model if there is no unit cell.
-It is also stored and used if ``populate()`` is called.
-The C++ signature (in ``gemmi/neighbor.hpp``) is::
+The reference to model is stored and is also used if ``populate()`` is called.
+The C++ signature (in ``gemmi/neighbor.hpp``) of the constructor is::
 
-  NeighborSearch::NeighborSearch(Model& model, const UnitCell& cell, double max_radius)
+  NeighborSearch::NeighborSearch(Model& model, const UnitCell& cell, double radius)
 
-Then the cell lists need to be populated with items either by calling::
+The cell lists need to be populated with items either by calling::
 
   void NeighborSearch::populate(bool include_h=true)
 
@@ -397,13 +79,13 @@ An example in Python:
 
   >>> import gemmi
   >>> st = gemmi.read_structure('../tests/1pfe.cif.gz')
-  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 3).populate(include_h=False)
+  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 5).populate(include_h=False)
 
 Here we do the same using ``add_chain()`` instead of ``populate()``:
 
 .. doctest::
 
-  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 3)
+  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 5)
   >>> for chain in st[0]:
   ...     ns.add_chain(chain, include_h=False)
 
@@ -411,7 +93,7 @@ And again the same, with complete control over which atoms are included:
 
 .. doctest::
 
-  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 3)
+  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 5)
   >>> for n_ch, chain in enumerate(st[0]):
   ...     for n_res, res in enumerate(chain):
   ...         for n_atom, atom in enumerate(res):
@@ -419,6 +101,10 @@ And again the same, with complete control over which atoms are included:
   ...                 ns.add_atom(atom, n_ch, n_res, n_atom)
   ...
 
+All these function store ``Mark``\ s in cell-lists. A mark contains position of
+atom's symmetry image and indices that point to the original atom.
+Searching for neighbors returns marks, from which we can obtain original chains,
+residues and atoms.
 
 NeighborSearch has a couple of functions for searching.
 The first one takes atom as an argument::
@@ -435,13 +121,13 @@ The first one takes atom as an argument::
 ``find_neighbors()`` checks altloc of the atom and
 considers as potential neighbors only atoms from the same
 conformation. In particular, if altloc is empty all atoms are considered.
-Non-negative ``min_dist`` in the ``find_neighbors()`` call prevents
+Positive ``min_dist`` in the ``find_neighbors()`` call prevents
 the atom whose neighbors we search from being included in the results
 (the distance of the atom to itself is zero).
 
 The second one takes position and altloc as explicit arguments::
 
-  std::vector<Mark*> NeighborSearch::find_atoms(const Position& pos, char altloc, float radius)
+  std::vector<Mark*> NeighborSearch::find_atoms(const Position& pos, char altloc, float min_dist, float radius)
 
 .. doctest::
 
@@ -450,13 +136,28 @@ The second one takes position and altloc as explicit arguments::
   >>> len(marks)
   7
 
-Additionally, in C++ you may use a function that takes a callback
-as the last argument (usage examples are in the source code)::
+To find only the nearest atom (regardless of altloc), use function::
+
+  Mark* find_nearest_atom(const Position& pos, float radius=INFINITY)
+
+.. doctest::
+
+  >>> ns.find_nearest_atom(point)
+  <gemmi.NeighborSearch.Mark 3 of atom 0/7/9 element C>
+
+All the above functions can search in a radius bigger than the radius passed
+to the NeighborSearch constructor, but it requires checking more cells
+(125+ instead of 27), which is usually not optimal.
+On the other hand, it is usually also not optimal to use big cells
+(radius ≫ 10Å). And very small ones (radius < 4Å) are also inefficient.
+
+In C++ you may use a low-level function that takes a callback
+as an argument (usage examples are in the source code)::
 
   template<typename T>
-  void NeighborSearch::for_each(const Position& pos, char altloc, float radius, const T& func)
+  void NeighborSearch::for_each(const Position& pos, char altloc, float radius, const T& func, int k=1)
 
-Cell-lists store ``Mark``\ s. When searching for neighbors you get references
+Cell-lists contain ``Mark``\ s. When searching for neighbors you get references
 (in C++ -- pointers) to these marks.
 ``Mark`` has a number of properties: ``x``, ``y``, ``z``,
 ``altloc``, ``element``, ``image_idx`` (index of the symmetry operation
@@ -467,9 +168,9 @@ that was used to generate this mark, 0 for identity),
 
   >>> mark = marks[0]
   >>> mark
-  <gemmi.NeighborSearch.Mark O of atom 0/7/3>
-  >>> mark.x, mark.y, mark.z
-  (19.659000396728516, 20.248884201049805, 17.645000457763672)
+  <gemmi.NeighborSearch.Mark 11 of atom 0/7/2 element O>
+  >>> mark.pos
+  <gemmi.Position(21.091, 18.2279, 17.841)>
   >>> mark.altloc
   '\x00'
   >>> mark.element
@@ -477,7 +178,7 @@ that was used to generate this mark, 0 for identity),
   >>> mark.image_idx
   11
   >>> mark.chain_idx, mark.residue_idx, mark.atom_idx
-  (0, 7, 3)
+  (0, 7, 2)
 
 The references to the original model and to atoms are not stored.
 ``Mark`` has a method ``to_cra()`` that needs to be called with ``Model``
@@ -493,25 +194,17 @@ as an argument to get a triple of Chain, Residue and Atom::
   >>> cra.residue
   <gemmi.Residue 8(DC) with 19 atoms>
   >>> cra.atom
-  <gemmi.Atom O5' at (-0.0, 13.8, -17.6)>
+  <gemmi.Atom OP2 at (1.4, 15.9, -17.8)>
 
-``Mark`` also has a helper method ``pos()`` that returns
-``Position(x, y, z)``::
-
-  Position NeighborSearch::Mark::pos() const
-
-.. doctest::
-
-  >>> mark.pos()
-  <gemmi.Position(19.659, 20.2489, 17.645)>
-
-Note that it can be the position of a symmetric image of the atom.
+Note that ``mark.pos`` can be the position of a symmetric image of the atom.
 In this example the "original" atom is in a different location:
 
 .. doctest::
 
+  >>> mark.pos
+  <gemmi.Position(21.091, 18.2279, 17.841)>
   >>> cra.atom.pos
-  <gemmi.Position(-0.028, 13.85, -17.645)>
+  <gemmi.Position(1.404, 15.871, -17.841)>
 
 The symmetry operation that relates the original position and its
 image is composed of two parts: one of symmetry transformations
@@ -530,18 +223,31 @@ The corresponding transformation is:
                [0, -1, 0]
                [0, 0, -1]>
 
-
 To find the full symmetry operation we need to determine the nearest
 image under PBC:
 
 .. doctest::
 
   >>> st.cell.find_nearest_pbc_image(point, cra.atom.pos, mark.image_idx)
-  <gemmi.NearestImage 12_665 in distance 2.39>
+  <gemmi.NearestImage 12_665 in distance 3.00>
+
+To calculate only the distance to the atom, you can use the same function
+with ``mark.pos`` and symmetry operation index 0. ``mark.pos`` represents
+the position of the atom that has already been transformed by the symmetry
+operation ``mark.image_idx`` (and shifted into the unit cell).
+
+.. doctest::
+
+  >>> st.cell.find_nearest_pbc_image(point, mark.pos, 0)
+  <gemmi.NearestImage 1_555 in distance 3.00>
+  >>> _.dist()
+  2.998659073040795
 
 For more information see the :ref:`properties of NearestImage <nearestimage>`.
 
 The neighbor search can also be used with small molecule structures.
+Here, we have MgI\ :sub:`2`, with each Mg atom surrounded by 6 iodine atoms,
+in a distance 2.92Å:
 
 .. doctest::
 
@@ -550,11 +256,13 @@ The neighbor search can also be used with small molecule structures.
   >>> ns = gemmi.NeighborSearch(small, 4.0).populate()
   >>> for mark in ns.find_site_neighbors(mg_site, min_dist=0.1):
   ...   site = mark.to_site(small)
-  ...   nim = small.cell.find_nearest_pbc_image(mg_site.fract, site.fract, mark.image_idx)
-  ...   print(site.label, 'image #%d' % mark.image_idx, nim.symmetry_code(),
-  ...         'dist=%.2f' % nim.dist())
-  I image #0 1_555 dist=2.92
-  I image #3 4_467 dist=2.92
+  ...   print(site.label, 'symmetry op #%d' % mark.image_idx)
+  I symmetry op #0
+  I symmetry op #0
+  I symmetry op #0
+  I symmetry op #3
+  I symmetry op #3
+  I symmetry op #3
 
 
 Contact search
@@ -674,7 +382,7 @@ The ContactSearch.Result class has four properties:
   >>> results[0].image_idx
   52
   >>> results[0].dist
-  2.8613362312316895
+  2.8613363437597505
 
 The first two properties are :ref:`CRA <CRA>`\ s for the involved atoms.
 The ``image_idx`` is an index of the symmetry image (both crystallographic
@@ -1331,7 +1039,7 @@ where
   is missing in the monomer library, or when link is missing,
   or the hydrogen adding procedure comes across an unexpected configuration.
   You can set warnings=sys.stderr to only print a warning to stderr
-  and continue. sys.stderr can be replaced with any object that has 
+  and continue. sys.stderr can be replaced with any object that has
   methods ``write(str)`` and ``flush()``.
 
 If hydrogen position is not uniquely determined its occupancy is set to zero.

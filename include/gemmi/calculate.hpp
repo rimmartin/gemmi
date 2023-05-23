@@ -60,14 +60,18 @@ template<> inline CenterOfMass calculate_center_of_mass(const Atom& atom) {
   return CenterOfMass{Position(atom.pos * w_mass), w_mass};
 }
 
+template<class T> void expand_box(const T& obj, Box<Position>& box) {
+  for (const auto& child : obj.children())
+    expand_box(child, box);
+}
+template<> inline void expand_box(const Atom& atom, Box<Position>& box) {
+  box.extend(atom.pos);
+}
+
 // we don't take NCS into account here (cf. NeighborSearch::set_bounding_cell())
 inline Box<Position> calculate_box(const Structure& st, double margin=0.) {
   Box<Position> box;
-  for (const Model& model : st.models)
-    for (const Chain& chain : model.chains)
-      for (const Residue& res : chain.residues)
-        for (const Atom& atom : res.atoms)
-          box.extend(atom.pos);
+  expand_box(st, box);
   if (margin != 0.)
     box.add_margin(margin);
   return box;
@@ -126,6 +130,12 @@ inline double calculate_omega(const Residue& res, const Residue& next) {
                                        next.get_n(), next.get_ca());
 }
 
+inline bool is_peptide_bond_cis(const Atom* ca1, const Atom* c,
+                                const Atom* n, const Atom* ca2) {
+  double omega = calculate_dihedral_from_atoms(ca1, c, n, ca2);
+  return std::fabs(omega) < rad(30.);
+}
+
 inline double calculate_chiral_volume(const Position& actr, const Position& a1,
                                       const Position& a2, const Position& a3) {
   return (a1 - actr).dot((a2 - actr).cross(a3 - actr));
@@ -147,31 +157,7 @@ inline std::array<double, 2> calculate_phi_psi(const Residue* prev,
   return phi_psi;
 }
 
-inline std::array<double, 4> find_best_plane(const std::vector<Atom*>& atoms) {
-  Vec3 mean;
-  for (const Atom* atom : atoms)
-    mean += atom->pos;
-  mean /= (double) atoms.size();
-  SMat33<double> m{0, 0, 0, 0, 0, 0};
-  for (const Atom* atom : atoms) {
-    Vec3 p = Vec3(atom->pos) - mean;
-    m.u11 += p.x * p.x;
-    m.u22 += p.y * p.y;
-    m.u33 += p.z * p.z;
-    m.u12 += p.x * p.y;
-    m.u13 += p.x * p.z;
-    m.u23 += p.y * p.z;
-  }
-  auto eig = m.calculate_eigenvalues();
-  double smallest = eig[0];
-  for (double d : {eig[1], eig[2]})
-    if (std::fabs(d) < std::fabs(smallest))
-      smallest = d;
-  Vec3 eigvec = m.calculate_eigenvector(smallest);
-  if (eigvec.x < 0)
-    eigvec *= -1;
-  return {{eigvec.x, eigvec.y, eigvec.z, -eigvec.dot(mean)}};
-}
+GEMMI_DLL std::array<double, 4> find_best_plane(const std::vector<Atom*>& atoms);
 
 inline double get_distance_from_plane(const Position& pos,
                                       const std::array<double, 4>& coeff) {

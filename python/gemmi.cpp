@@ -3,8 +3,9 @@
 #include "gemmi/version.hpp"   // for GEMMI_VERSION
 #include "gemmi/math.hpp"      // for hc
 #include "gemmi/dirwalk.hpp"   // for CifWalk, CoorFileWalk
-#include "gemmi/fileutil.hpp"  // for expand_if_pdb_code
+#include "gemmi/pdb_id.hpp"    // for expand_if_pdb_code
 #include "gemmi/bessel.hpp"    // for bessel_i1_over_i0
+#include "gemmi/stats.hpp"     // for Correlation
 #include "gemmi/third_party/tao/pegtl/parse_error.hpp" // for parse_error
 
 #include "common.h"
@@ -29,17 +30,18 @@ template<typename T> int get_max_bin(const T& bins) {
 
 void add_misc(py::module& m) {
   py::class_<gemmi::CifWalk>(m, "CifWalk")
-    .def(py::init<const char*>())
+    .def(py::init<const char*, char>(), py::arg("path"), py::arg("try_pdbid")='\0')
     .def("__iter__", [](gemmi::CifWalk& self) {
         return py::make_iterator(self);
     }, py::keep_alive<0, 1>());
   py::class_<gemmi::CoorFileWalk>(m, "CoorFileWalk")
-    .def(py::init<const char*>())
+    .def(py::init<const char*, char>(), py::arg("path"), py::arg("try_pdbid")='\0')
     .def("__iter__", [](gemmi::CoorFileWalk& self) {
         return py::make_iterator(self);
     }, py::keep_alive<0, 1>());
   m.def("is_pdb_code", &gemmi::is_pdb_code);
-  m.def("expand_pdb_code_to_path", &gemmi::expand_pdb_code_to_path);
+  m.def("expand_pdb_code_to_path", &gemmi::expand_pdb_code_to_path,
+        py::arg("code"), py::arg("filetype"), py::arg("throw_if_unset")=false);
   m.def("expand_if_pdb_code", &gemmi::expand_if_pdb_code,
         py::arg("code"), py::arg("filetype")='M');
   m.attr("hc") = py::float_(gemmi::hc());
@@ -50,6 +52,13 @@ void add_misc(py::module& m) {
         x = std::abs(x);
         return x + std::log1p(std::exp(-2 * x)) - std::log(2);
   }));
+
+  // stats.hpp
+  py::class_<gemmi::Correlation>(m, "Correlation")
+    .def_readonly("n", &gemmi::Correlation::n)
+    .def("coefficient", &gemmi::Correlation::coefficient)
+    .def("mean_ratio", &gemmi::Correlation::mean_ratio)
+    ;
 
   // utilities inspired by numpy.bincount()
   m.def("binmean", [](py::array_t<int> bins, py::array_t<double> values) {

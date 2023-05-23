@@ -167,7 +167,7 @@ the following rules to relax the syntax:
   (such files were written by old versions of Refmac and SHELXL,
   and were also present in the CCP4 monomer library),
 * block name (*blockcode*) can be empty, i.e. the block can start
-  with bare ``data_`` keyword (RELION writes such files),
+  with bare ``data_`` keyword (RELION and buccaneer write such files),
 * unquoted strings cannot start with keywords (STAR spec is ambiguous
   about this -- see
   `StarTools doc <http://www.globalphasing.com/startools/>`_ for details;
@@ -352,11 +352,8 @@ And if the ``path`` above is ``-``, the standard input is read.
 If you use these functions in multiple compilation units, having
 the CIF parser implemented in headers makes the compilation time longer.
 To avoid it, include only ``<gemmi/read_cif.hpp>``
-and use functions declared there instead. In one compilation unit
-include this file after defining a macro that guards the implementation::
+and either link with libgemmi or add ``src/read_cif.cpp`` to your project.
 
-  #define GEMMI_READ_CIF_IMPLEMENTATION
-  #include <gemmi/read_cif.cpp>
 
 Python
 ------
@@ -556,6 +553,27 @@ Document has also one property
   'components.cif'
 
 
+.. warning::
+
+   Adding and removing blocks may invalidate references to other blocks
+   in the same Document. This is expected when working with a C++ vector,
+   but when using Gemmi from Python it is a flaw.
+   The same applies to functions that add/remove items in a block.
+   More precisely:
+
+   * functions that add items (e.g. ``add_new_block``) may cause memory
+     re-allocation invalidating references to all other items (blocks),
+   * functions that remove items (``__delitem__``) invalidate references to
+     all items after the removed one.
+
+   This means that you need to update a reference before using it:
+
+    .. code-block:: python
+
+       block = doc[0]
+       st.add_new_block(...)     # block gets invalidated
+       block = st[0]             # block is valid again
+
 Block
 =====
 
@@ -566,9 +584,12 @@ Each item is one of:
 * table, a.k.a loop (Loop)
 * or save frame (Block -- the same data structure as for block).
 
-(Although keyword ``global_`` and empty block name (``data_``) are
-not valid CIF, gemmi parses them as :ref:`exceptions <what_is_parsed>`
-and stores them as blocks with names, respectively, empty and ``#``.)
+A block headed by the word ``global_``, part of the STAR syntax, although
+`not allowed <https://onlinelibrary.wiley.com/iucr/itc/Ga/ch2o2v0001/sec2o2o7o1o9o5/>`_
+in CIF, is :ref:`parsed <what_is_parsed>` into a Block with empty name.
+
+A block headed by bare ``data_``, although not allowed neither in CIF nor
+in STAR, is parsed into a Block with name set to " " (the space character).
 
 C++
 ---

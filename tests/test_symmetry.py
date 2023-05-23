@@ -1,11 +1,12 @@
 #!/usr/bin/env python
 
 import math
-import unittest
+import pickle
 import random
+import unittest
 import gemmi
 try:
-    from cctbx import sgtbx
+    from cctbx import sgtbx  # pytype: disable=import-error
     print('(w/ sgtbx)')
 except ImportError:
     sgtbx = None
@@ -198,6 +199,9 @@ class TestSymmetry(unittest.TestCase):
                 #from_ref = '%s' % cob_to_ref.inverse().c()
                 c2p_sg = gemmi.Op(cctbx_sg.z2p_op().c().inverse().as_xyz())
                 self.assertEqual(sg.centred_to_primitive(), c2p_sg)
+                hand_sgtbx = cctbx_info.change_of_basis_op_to_other_hand()
+                self.assertEqual(sg.change_of_hand_op().triplet(),
+                                 hand_sgtbx.as_xyz())
             ops = gemmi.get_spacegroup_reference_setting(sg.number).operations()
             ops.change_basis_forward(sg.basisop)
             self.assertEqual(ops, sg.operations())
@@ -207,6 +211,20 @@ class TestSymmetry(unittest.TestCase):
                 self.assertEqual(s.hall().strip(), next(itb).hall)
             with self.assertRaises(StopIteration):
                 next(itb)
+
+    def test_enantiomorphic_pairs(self):
+        counter = 0
+        for sg in gemmi.spacegroup_table():
+            coh = sg.change_of_hand_op()
+            ops = sg.operations()
+            ops.change_basis_forward(coh)
+            other_hand = gemmi.find_spacegroup_by_ops(ops)
+            if sg.hall != other_hand.hall:
+                counter += 1
+            elif sg != other_hand:
+                # duplicates
+                self.assertTrue(sg.number == 68 or sg.xhm() == 'A b a m')
+        self.assertEqual(counter, 2 * 11)
 
     def test_symmorphic(self):
         for sg in gemmi.spacegroup_table():
@@ -346,11 +364,6 @@ class TestSymmetry(unittest.TestCase):
         self.assertEqual(gops.epsilon_factor_without_centering([2,0,0]), 4)
 
     def test_pickling(self):
-        try:
-            import cPickle as pickle  # Use cPickle on Python 2.7
-        except ImportError:
-            import pickle
-
         sg = gemmi.SpaceGroup("P 31 2 1")
         pkl_string = pickle.dumps(sg, protocol=pickle.HIGHEST_PROTOCOL)
         result = pickle.loads(pkl_string)

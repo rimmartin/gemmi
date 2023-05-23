@@ -1,11 +1,16 @@
 #!/usr/bin/env python
 
 import gzip
+from io import StringIO
 import os
 import sys
 import unittest
 import gemmi
 from common import full_path, get_path_for_tempfile
+try:
+    from Bio import PDB
+except ImportError:
+    PDB = None
 
 def is_written_to_pdb(line, via_cif):
     if line[:6] in ['COMPND', 'SOURCE', 'MDLTYP', 'AUTHOR', 'REVDAT', 'JRNL  ',
@@ -115,6 +120,14 @@ ATOM     67  N   VAL A  10      23.342  43.662  37.798  1.00 13.44           N
 ANISOU   67  N   VAL A  10     2079   1653   1371   -123    133   -148       N  
 """  # noqa: W291 - trailing whitespace
 
+# from https://cci.lbl.gov/hybrid_36/
+HY36_EXAMPLE = """\
+ATOM  99998  SD  MET L9999      48.231 -64.383  -9.257  1.00 11.54           S
+ATOM  99999  CE  MET L9999      49.398 -63.242 -10.211  1.00 14.60           C
+ATOM  A0000  N   VAL LA000      52.228 -67.689 -12.196  1.00  8.76           N
+ATOM  A0001  CA  VAL LA000      53.657 -67.774 -12.458  1.00  3.40           C
+"""
+
 def read_lines_and_remove(path):
     with open(path) as f:
         out_lines = f.readlines()
@@ -188,6 +201,7 @@ class TestMol(unittest.TestCase):
               '_entity.', '_entity_poly_seq.', '_entry.',
               '_exptl.', '_exptl_crystal.', '_pdbx_database_status.',
               '_pdbx_struct_assembly.', '_pdbx_struct_assembly_gen.',
+              '_pdbx_struct_mod_residue.',
               '_pdbx_struct_oper_list.', '_refine.', '_reflns.', '_software.',
               '_struct.', '_struct_asym.', '_struct_conf.',
               '_struct_conf_type.', '_struct_conn.', '_struct_conn_type.',
@@ -257,12 +271,14 @@ class TestMol(unittest.TestCase):
         st = gemmi.read_structure(full_path('rnase_frag.pdb'))
         if add_entities:
             self.assertEqual(len(st.entities), 0)
+            st.add_entity_types()
             st.assign_subchains()
             st.ensure_entities()
             self.assertEqual(len(st.entities), 4)
         model = st[0]
         nres_a = len(model['A'])
         nres_b = len(model['B'])
+        st.add_entity_types()
         st.remove_ligands_and_waters()  # removes SO4 from each chain
         self.assertEqual(len(model['A']), nres_a - 1)
         self.assertEqual(len(model['B']), nres_b - 1)
@@ -508,6 +524,17 @@ class TestMol(unittest.TestCase):
     def test_read_write_4oz7_via_cif(self):
         self.test_read_write_4oz7(via_cif=True)
 
+    @unittest.skipIf(PDB is None, "BioPython not installed.")
+    def test_reading_output_mmcif_with_biopython(self):
+        path = full_path('4oz7.pdb')
+        st = gemmi.read_structure(path)
+        groups = gemmi.MmcifOutputGroups(True)
+        # BioPython parser chokes without _atom_site.group_PDB
+        # groups.group_pdb = False
+        doc = st.make_mmcif_document(groups)
+        parser = PDB.MMCIFParser(QUIET=True)
+        parser.get_structure("none", StringIO(doc.as_string()))
+
     def test_pdb_element_names(self):
         pdb_line = "HETATM 4154 MG    MG A 341       1.384  19.340  11.968" \
                    "  1.00 67.64          MG"
@@ -651,7 +678,12 @@ class TestMol(unittest.TestCase):
         self.assertEqual(len(st), 0)
 
     def test_remove2(self):
-        st = gemmi.read_structure(full_path('1pfe.cif.gz'))
+        # test also save_doc
+        saved_doc = gemmi.cif.Document()
+        st = gemmi.read_structure(full_path('1pfe.cif.gz'), save_doc=saved_doc)
+        self.assertEqual(saved_doc[0].name, '1PFE')
+        self.assertEqual(saved_doc[0].find_value('_entity_name_com.name'),
+                         "'QUINOMYCIN A'")
         model = st[0]
         self.assertEqual(len(model), 2)
         b = model['B']
@@ -795,6 +827,15 @@ class TestMol(unittest.TestCase):
         bio = gemmi.make_assembly(a1, model, gemmi.HowToNameCopiedChain.Short)
         self.assertEqual([ch.name for ch in bio], ['B'])
 
+    def test_hybrid36(self):
+        st = gemmi.read_pdb_string(HY36_EXAMPLE)
+        nums = [(cra.atom.serial, cra.residue.seqid.num) for cra in st[0].all()]
+        self.assertEqual(nums, [(99998, 9999), (99999, 9999),
+                                (100000, 10000), (100001, 10000)])
+        out = st.make_minimal_pdb().splitlines()
+        # original serial numbers are lost when writing pdb, check only seqid
+        self.assertEqual(out[1][17:30], 'MET L9999    ')
+        self.assertEqual(out[4][17:30], 'VAL LA000    ')
 
 if __name__ == '__main__':
     unittest.main()

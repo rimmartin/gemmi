@@ -1,9 +1,8 @@
 $ gemmi -h
-gemmi 0.5.7
+gemmi 0.6.2-dev
 Command-line utility that accompanies the GEMMI library,
 which is a joint project of CCP4 and Global Phasing Ltd.
-Licence: Mozilla Public License 2.0.
-Copyright 2017-2020 Global Phasing Ltd.
+Licence: Mozilla Public License 2.0. Copyright Global Phasing Ltd.
 https://github.com/project-gemmi/gemmi
 
 Usage: gemmi [--version] [--help] <command> [<args>]
@@ -37,3 +36,4 @@ Commands:
  tags          list tags from CIF file(s)
  validate      validate CIF 1.1 syntax
  wcn           calculate local density / contact numbers (WCN, CN, ACN, LDM)
+ xds2mtz       convert XDS_ASCII to MTZ

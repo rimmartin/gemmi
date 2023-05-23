@@ -76,391 +76,6 @@ and a flag for metals (the classification is somewhat arbitrary):
     >>> gemmi.Element('C').is_metal
     False
 
-.. _coordinates:
-
-Coordinates and matrices
-========================
-
-Coordinates are represented by two classes:
-
-* ``Position`` for coordinates in Angstroms (orthogonal coordinates),
-* ``Fractional`` for coordinates relative to the unit cell
-  (fractional coordinates).
-
-Both ``Position`` and ``Fractional`` are derived from ``Vec3``,
-which has three numeric properties: ``x``, ``y`` and ``z``.
-
-.. doctest::
-
-    >>> v = gemmi.Vec3(1.2, 3.4, 5.6)
-    >>> v.y = -v.y
-    >>> # it can also be indexed
-    >>> v[1]
-    -3.4
-
-The only reason to have separate types is to prevent functions that
-expect fractional coordinates from accepting orthogonal ones, and vice versa.
-In C++ these types are defined in ``gemmi/math.hpp``.
-
-If you have points in space you may want to calculate distances, angles
-and dihedral angles:
-
-.. doctest::
-
-    >>> from math import degrees
-    >>> p1 = gemmi.Position(0, 0, 0)
-    >>> p2 = gemmi.Position(0, 0, 1)
-    >>> p3 = gemmi.Position(0, 1, 0)
-    >>> p4 = gemmi.Position(-1, 1, 0)
-    >>> p1.dist(p2)
-    1.0
-    >>> degrees(gemmi.calculate_angle(p1, p2, p3))
-    45.00000000000001
-    >>> degrees(gemmi.calculate_dihedral(p1, p2, p3, p4))
-    90.0
-
-Additionally, in C++ you have other functions.
-See headers ``gemmi/math.hpp`` and ``gemmi/calculate.hpp``.
-
-----
-
-.. _transform:
-
-Working with macromolecular coordinates involves 3D transformations,
-such as crystallographic and non-crystallographic symmetry operations,
-and fractionalization and orthogonalization of coordinates.
-This requires a tiny bit of linear algebra.
-
-3D transformations tend to be represented either by a 4x4 matrix,
-or by a 3x3 matrix and a translation vector. Gemmi uses the latter.
-Transformations are represented by the ``Transform`` class
-that has two member variables:
-``mat`` (of type ``Mat33``) and ``vec`` (of type ``Vec3``, which was
-introduced above).
-
-.. doctest::
-
-    >>> tr = gemmi.Transform()  # identity
-    >>> tr.mat
-    <gemmi.Mat33 [1, 0, 0]
-                 [0, 1, 0]
-                 [0, 0, 1]>
-    >>> tr.vec
-    <gemmi.Vec3(0, 0, 0)>
-
-Both ``Vec3`` and ``Mat33`` can be converted to and from Python's list:
-In case of ``Mat33`` it is a nested list:
-
-.. doctest::
-
-    >>> tr.vec.fromlist([3.0, 4.5, 5])
-    >>> tr.vec.tolist()
-    [3.0, 4.5, 5.0]
-
-    >>> # nested listed for Mat33
-    >>> m = tr.mat.tolist()
-    >>> m
-    [[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]
-    >>> m[1][2] = -5
-    >>> tr.mat.fromlist(m)
-    >>> tr.mat
-    <gemmi.Mat33 [1, 0, 0]
-                 [0, 1, -5]
-                 [0, 0, 1]>
-
-
-Here is an example that shows a few other properties:
-
-.. doctest::
-  :hide:
-
-  >>> import math
-
-.. doctest::
-
-    >>> # get NCS transformation from an example pdb file
-    >>> ncs_op = gemmi.read_structure('../tests/1lzh.pdb.gz').ncs[0].tr
-    >>> type(ncs_op)
-    <class 'gemmi.Transform'>
-    >>> ncs_op.mat
-    <gemmi.Mat33 [0.97571, -0.2076, 0.06998]
-                 [0.2156, 0.96659, -0.13867]
-                 [-0.03885, 0.15039, 0.98786]>
-    >>> _.determinant()
-    1.0000038877996669
-    >>> ncs_op.mat.trace()
-    2.93016
-    >>> math.degrees(math.acos((_ - 1) / 2))  # calculate rotation angle
-    15.186116047571074
-    >>> ncs_op.vec
-    <gemmi.Vec3(-14.1959, 0.72997, -30.5229)>
-
-    >>> # is the 3x3 matrix above orthogonal?
-    >>> mat = ncs_op.mat
-    >>> identity = gemmi.Mat33()
-    >>> mat.multiply(mat.transpose()).approx(identity, epsilon=1e-5)
-    True
-
-    >>> ncs_op.apply(gemmi.Vec3(20, 30, 40))
-    <gemmi.Vec3(1.8895, 28.4929, 12.7262)>
-    >>> ncs_op.inverse().apply(_)
-    <gemmi.Vec3(20, 30, 40)>
-
-To avoid mixing of orthogonal and fractional coordinates
-Gemmi also has ``FTransform``, which is like ``Transform``,
-but can be applied only to ``Fractional`` coordinates.
-
-----
-
-Separate classes are used for symmetric 3x3 matrices: SMat33f and SMat33d
-(for 32- and 64-bit floating point numbers, respectively).
-These classes are used primarily for anisotropic ADP tensors;
-their member variables are named ``u11``, ``u22``, ``u33``,
-``u12``, ``u13`` and ``u23``. SMat33 classes provide a few methods,
-including calculations of eigenvalues and eigenvectors.
-
-.. doctest::
-
-  >>> aniso = gemmi.read_small_structure('../tests/4003024.cif').sites[2].aniso
-  >>> aniso.u11
-  0.103
-  >>> aniso.elements_pdb()    # (u11, u22, u33, u12, u13, u23)
-  [0.103, 0.156, 0.156, 0.0, 0.0, 0.0]
-  >>> aniso.elements_voigt()  # (u11, u22, u33, u23, u13, u12)
-  [0.103, 0.156, 0.156, 0.0, 0.0, 0.0]
-  >>> aniso.trace()
-  0.41500000000000004
-  >>> aniso.determinant()
-  0.002506608
-  >>> aniso.calculate_eigenvalues()
-  [0.103, 0.156, 0.156]
-
-----
-
-.. _box:
-
-We also have a little utility for calculation of bounding boxes.
-In two variants: for ``Position`` and ``Fractional``:
-
-.. doctest::
-
-  >>> box = gemmi.PositionBox()
-  >>> box.extend(gemmi.Position(-5, 5, 0))
-  >>> box.extend(gemmi.Position(4, 4, -1))
-  >>> box.minimum
-  <gemmi.Position(-5, 4, -1)>
-  >>> box.maximum
-  <gemmi.Position(4, 5, 0)>
-  >>> box.get_size()
-  <gemmi.Position(9, 1, 1)>
-  >>> box.add_margin(0.5)  # changes both minimum and maximum
-  >>> box.get_size()
-  <gemmi.Position(10, 2, 2)>
-
-  >>> # Fractional variant works in the same way
-  >>> box = gemmi.FractionalBox()
-
-----
-
-In C++ all these types are defined in ``gemmi/math.hpp``.
-
-.. _unitcell:
-
-Unit Cell
-=========
-
-When working with a structural model in a crystal we need to know
-the unit cell. In particular, we need to be able to switch between
-orthogonal and fractional coordinates.
-Here are the most important properties and methods of the ``UnitCell`` class:
-
-**C++**
-
-.. literalinclude:: code/cell.cpp
-
-**Python**
-
-.. doctest::
-
-    >>> cell = gemmi.UnitCell(25.12, 39.50, 45.07, 90, 90, 90)
-    >>> cell
-    <gemmi.UnitCell(25.12, 39.5, 45.07, 90, 90, 90)>
-    >>> cell.a, cell.b, cell.c
-    (25.12, 39.5, 45.07)
-    >>> cell.alpha, cell.beta, cell.gamma
-    (90.0, 90.0, 90.0)
-    >>> cell.volume
-    44720.2568
-    >>> cell.frac.mat  # fractionalization matrix
-    <gemmi.Mat33 [0.0398089, -0, -0]
-                 [0, 0.0253165, 0]
-                 [0, 0, 0.0221877]>
-    >>> cell.fractionalize(gemmi.Position(10, 10, 10))
-    <gemmi.Fractional(0.398089, 0.253165, 0.221877)>
-    >>> cell.orth.mat  # orthogonalization matrix
-    <gemmi.Mat33 [25.12, 0, 0]
-                 [0, 39.5, -0]
-                 [0, 0, 45.07]>
-    >>> cell.orthogonalize(gemmi.Fractional(0.5, 0.5, 0.5))
-    <gemmi.Position(12.56, 19.75, 22.535)>
-
-A symmetry operation that works on fractional coordinates can also be
-"orthogonalized" -- converted to :ref:`transformation <transform>`
-that operates on Cartesian coordinates:
-
-.. doctest::
-
-    >>> cell.op_as_transform(gemmi.Op('-z,y+1/2,-x'))  #doctest: +ELLIPSIS
-    <gemmi.Transform object at 0x...>
-    >>> _.apply(gemmi.Position(0, 6, 2.1))
-    <gemmi.Vec3(-1.17045, 25.75, 0)>
-
-Cells can be compared with one of two functions.
-approx() is meant for almost identical cells that differ only
-due to numeric errors. It checks if the cell parameters differ
-by less than a given absolute tolerance ε.
-is_similar() uses relative tolerance to compare the edge lengths
-and absolute tolerance in degrees to compare the angles:
-
-.. doctest::
-
-    >>> cell2 = gemmi.UnitCell(25, 39, 45, 89, 90, 88)
-    >>> cell.approx(cell2, epsilon=1e-6)
-    False
-    >>> cell.is_similar(cell2, rel=0.03, deg=2.5)
-    True
-
-Next, we can obtain the reciprocal cell:
-
-.. doctest::
-
-    >>> cell.reciprocal()
-    <gemmi.UnitCell(0.0398089, 0.0253165, 0.0221877, 90, 90, 90)>
-
-and `metric tensors <https://dictionary.iucr.org/Metric_tensor>`_
-in the direct and reciprocal space:
-
-.. doctest::
-
-    >>> cell.metric_tensor()
-    <gemmi.SMat33d(631.014, 1560.25, 2031.3, 0, 0, 0)>
-    >>> cell.reciprocal_metric_tensor()
-    <gemmi.SMat33d(0.00158475, 0.000640923, 0.000492294, 0, 0, 0)>
-
-If the lattice is centered, we can obtain a primitive cell.
-We have a function that takes centring type (return value of
-``SpaceGroup.centring_type()``), uses matrix from ``centred_to_primitive()``
-and returns orthogonalization matrix of a primitive cell:
-of the primitive cell:
-
-.. doctest::
-
-    >>> cell.primitive_orth_matrix('I')
-    <gemmi.Mat33 [-12.56, 12.56, 12.56]
-                 [19.75, -19.75, 19.75]
-                 [22.535, 22.535, -22.535]>
-
-
-This matrix can be used to obtain the G\ :sup:`6` and S\ :sup:`6` vectors,
-which are used in Niggli and Selling-Delaunay :ref:`cell reduction <niggli>`.
-
-Function ``is_compatible_with_spacegroup`` checks if the space group
-operations don't change the metric tensor elements by more than *ε*
-(*ε*\ =0.001 by default):
-
-.. doctest::
-
-    >>> cell.is_compatible_with_spacegroup(gemmi.SpaceGroup('I 2 2 2'))
-    True
-    >>> cell.is_compatible_with_spacegroup(gemmi.SpaceGroup('P 3'), eps=0.01)
-    False
-
-
-The UnitCell object stores internally (in `UnitCell.images``) a list of
-symmetry transformations -- crystallographic symmetry and, in case of
-macromolecules, also NCS -- that transform asymmetric unit (ASU) into
-the complete unit cell. This list is populated by the class that contains
-the UnitCell. It is done automatically when reading a coordinate file.
-If you set the unit cell, space group or NCS manually,
-call Structure.setup_cell_images() or SmallStructure.setup_cell_images()
-to update ``images``.
-(The NCS operarations in this list are only those marked as not "given"
-in the MTRIX record in the PDB format or in _struct_ncs_oper in mmCIF).
-
-UnitCell.images are used for searching neighbors,
-calculating structure factors, and a few other things.
-The following functions also rely on it:
-
-* ``UnitCell::volume_per_image() -> double`` -- returns ``UnitCell::volume``
-  divided by the number of the molecule images in the unit cell,
-
-  .. doctest::
-
-    >>> st = gemmi.read_structure('../tests/1pfe.cif.gz')
-    >>> st.spacegroup_hm
-    'P 63 2 2'
-    >>> st.cell.volume / st.cell.volume_per_image()
-    12.0
-
-* ``UnitCell::is_special_position(const Position& pos, double max_dist=0.8) -> int`` --
-  returns the number of nearby symmetry mates of an atom.
-  Non-zero only for atoms on special positions.
-  For example, returns 3 for an atom on 4-fold symmetry axis.
-
-  .. doctest::
-
-    >>> # chloride ion in 1PFE is significantly off the special position
-    >>> cl = st[0].sole_residue('A', gemmi.SeqId('20'))[0]
-    >>> cl
-    <gemmi.Atom CL at (-0.3, 23.0, -19.6)>
-    >>> round(1.0 / cl.occ)
-    6
-    >>> st.cell.is_special_position(cl.pos, max_dist=0.5)
-    0
-    >>> st.cell.is_special_position(cl.pos, max_dist=0.8)
-    3
-    >>> st.cell.is_special_position(cl.pos, max_dist=1.2)
-    5
-
-* ``UnitCell::find_nearest_image(const Position& ref, const Position& pos, Asu asu) -> NearestImage`` --
-  with the last argument set to ``Asu::Any``,
-  it returns the symmetric image of ``pos`` that is nearest to ``ref``.
-  The last argument can also be set to ``Asu::Same`` or ``Asu::Different``.
-
-* ``UnitCell::find_nearest_pbc_image(const Position& ref, const Position& pos, int image_idx)`` --
-  similar to the function above, but takes the index of symmetry transformation
-  as an argument and finds only the unit cell shift. The section about
-  :ref:`neighbor search <neighbor_search>` has an example of usage.
-
-The unit cell can be used to determine interplanar spacing *d*:sub:`hkl`
-in the reciprocal space (the resolution corresponding to a reflection):
-
-.. doctest::
-
-    >>> cell.calculate_d([0, 1, 0])
-    39.5
-
-Computationally, *d* is calculated from 1/*d*:sup:`2`, so if you
-need the latter you can calculate it directly:
-
-.. doctest::
-
-    >>> cell.calculate_1_d2([8, -9, 10])
-    0.20256818878283983
-
-When changing a symmetry setting of coordinates or reindexing reflections
-we need a new unit cell, which can be obtained with one of functions
-``changed_basis_forward()`` and ``changed_basis_backward()``:
-
-.. doctest::
-
-    >>> cell.changed_basis_backward(gemmi.Op('y,z,x'), set_images=True)
-    <gemmi.UnitCell(45.07, 25.12, 39.5, 90, 90, 90)>
-
-With ``set_images=False`` the ``images`` list in the new unit cell is empty.
-With ``True`` -- it contains transformed original list
-(but it doesn't work correctly when the cell volume changes).
-
 Small Molecules
 ===============
 
@@ -797,11 +412,7 @@ only one compilation unit (that does not change often).
 
 Alternatively, if you want to support gzipped files,
 use function ``gemmi::read_structure_gz()`` declared in the header
-``gemmi/read_coor.hpp``. The definition of this file is guarded by a macro,
-so in exactly one compilation unit you need to have::
-
-  #define GEMMI_READ_COOR_IMPLEMENTATION
-  #include "gemmi/read_coor.hpp"
+``gemmi/mmread_gz.hpp`` (requires linking with libgemmi).
 
 If you know the format of files that you will read, you may also
 use a function specific to this format. For example, the next section
@@ -875,7 +486,8 @@ We support the following popular extensions of the format:
 * segment ID (columns 73-76) from PDB v2,
 * hybrid-36_ encoding of sequence IDs for sequences longer than 9999
   (although we are yet to find an examples for this),
-* hybrid-36_ encoding of serial numbers for more than 99,999 atoms.
+* hybrid-36_ encoding of serial numbers for more than 99,999 atoms,
+* tilde-hetnam extension for extended CCD codes (residue names).
 
 .. _supported_records:
 
@@ -897,6 +509,7 @@ The records that are interpreted can be converted from/to mmCIF:
 - REMARK 350
 - DBREF/DBREF1/DBREF2
 - SEQRES
+- MODRES
 - HELIX
 - SHEET
 - SSBOND
@@ -977,6 +590,13 @@ it starts in column 13 even if it has a one-letter element code:
 
    HETATM 6495  CAX R58 A 502      17.143 -29.934   7.180  1.00 58.54           C
    HETATM 6496 CAX3 R58 A 502      16.438 -31.175   6.663  1.00 57.68           C
+
+Columns 18-20 contain the residue name (CCD code). When the PDB ran out of
+three-character codes in 2023, it started assigning codes with 4+ characters,
+which no longer fit into the PDB format. The tilde-hetnam extension addresses
+this issue: long CCD code is substituted with 3 characters,
+of which the last one is a tilde (``~``);
+the original code is stored in columns 72-79 of the HETNAM record.
 
 Columns 23-27 contain a sequence ID. It consists of a number (columns 23-26)
 and, optionally, also an insertion code (A-Z) in column 27:
@@ -1114,19 +734,6 @@ in a header ``gemmi/to_pdb.hpp``::
                  PdbWriteOptions opt=PdbWriteOptions());
   void write_minimal_pdb(const Structure& st, std::ostream& os);
   std::string make_pdb_headers(const Structure& st);
-
-Internally, these functions use the
-`stb_sprintf <https://github.com/nothings/stb>`_ library.
-And like in stb-style libraries, the implementation of the functions above
-is guarded by a macro. In exactly one file you need to add::
-
-  #define GEMMI_WRITE_IMPLEMENTATION
-  #include <gemmi/to_pdb.hpp>
-
-Moreover, the same holds for functions writing MTZ and mmCIF files defined in
-``gemmi/mtz.hpp`` and ``gemmi/to_mmcif.hpp``.
-In the source of the gemmi program all these functions are compiled in
-one compilation unit -- see :file:`src/output.cpp`.
 
 **Python**
 
@@ -1394,10 +1001,6 @@ and then it is written to disk.
 ::
 
   #include <gemmi/to_cif.hpp>    // cif::Document -> file
-
-  // In exactly one compilation unit define this before including one of
-  // mtz.hpp, to_mmcif.hpp, to_pdb.hpp.
-  #define GEMMI_WRITE_IMPLEMENTATION
   #include <gemmi/to_mmcif.hpp>  // Structure -> cif::Document
 
   std::ofstream os("new.cif");
@@ -1683,6 +1286,9 @@ the ``Structure`` has the following properties:
   assemblies defined in the REMARK 350 in pdb, or in corresponding mmCIF
   categories (_pdbx_struct_assembly, _pdbx_struct_assembly_gen,
   _pdbx_struct_assembly_prop and _pdbx_struct_oper_list)
+* ``input_format`` (enum ``CoorFormat``) -- what file format the structure
+  was read from,
+* ``has_d_fraction`` (bool) -- how :ref:`deuterium is represented <deuterium>`,
 * ``info`` (C++ type: ``map<string, string>``) --
   minimal metadata with keys being mmcif tags (_entry.id, _exptl.method, ...),
 * ``raw_remarks`` (C++ type: ``vector<string>``) -- REMARK records
@@ -1748,7 +1354,7 @@ for example,
    * ``add_model`` may cause memory re-allocation invalidating references
      to all other models,
    * ``remove_model`` and ``__delitem__`` invalidate references only to
-     models  that are after the removed one.
+     models that are after the removed one.
 
    This means that you need to update a reference before using it:
 
@@ -1785,18 +1391,64 @@ for names such as "R 3"):
 Entity
 ------
 
-*Entity* is a new concept introduced in the mmCIF format.
-If the structure is read from a PDB file, we can assign entities
-by calling method ``setup_entities``.
-This method uses a simple heuristic to group residues into
-:ref:`subchains <subchain>` which are mapped to entities
-(this is primarily about finding where the polymer ends;
-works best if the TER record is used).
-All polymers with identical sequence in the SEQRES record are mapped to
-the same entity.
+*Entity* is a new concept introduced in the mmCIF format --
+a chemically distinct part, such as polymer, ligand, ion or water.
+Ligands with the same residue name correspond to the same entity.
+Polymers that have the same sequence --- the same entity.
 
-Calling ``setup_entities`` is useful when converting from PDB to mmCIF
-(but to just convert files use :ref:`gemmi-convert <convert>`):
+In the mmCIF format entities are explicitly linked with structural units
+that we call here :ref:`subchains <subchain>`. PDB files do not have
+this concept. If we read the structure from a PDB file,
+we can assign entities by calling ``setup_entities``.
+This method uses a simple heuristic to group residues into
+*subchains*, which are then mapped to entities.
+
+Internally, ``setup_entities()`` runs four functions (in this order):
+
+* ``add_entity_types()`` -- sets Residue.entity_type if it's not already set.
+
+  When reading a PDB file, entity_type is assigned automatically if the chains
+  contains the TER record. TER marks the end of polymer, so residues before
+  TER are in polymer, residues after are non-polymers and waters.
+  PDB files from the PDB always have TERs, but files from other sources
+  may not have it. In such cases this function uses a simple heuristic
+  to determine where the polymer ends.
+
+  Note: if you'd have a PDB file with TER records in incorrect places
+  (the only correct place is the end of polymer),
+  you'd need to discard possibly incorrect entity_type values with:
+
+  .. doctest::
+
+    >>> structure.add_entity_types(overwrite=True)
+
+* ``assign_subchains()`` -- assigns subchain names in each chain that doesn't
+  have all the subchains assigned yet. Structural units in the chain are
+  implied by the previously assigned entity_type variables.
+  The name for each unit is set by setting Residue.subchain variables in all
+  residues of the unit.
+
+  In the mmCIF files generated by the PDB software, subchain names
+  (label_asym_id) are similar to chain names (auth_asym_id): A, B, C, …
+  Here, to avoid confusion, subchains are named differently.
+  They start with the chain name, followed by the letter x,
+  followed by an identifier of the part of the chain. For example,
+  chain A may have 5 subchains: Axp (polymer), Ax0, Ax1, Ax2 (ligands)
+  and Axw (water). 'x' is a poor separator, '-' would look better,
+  but the PDB OneDep software, contrary to the mmCIF spec,
+  requires that label_asym_id is alphanumeric only.
+
+* ``ensure_entities()`` -- makes sure that each subchain is linked to
+  one of Entity objects in Structure.entities. Creates Entity objects if needed.
+
+* ``deduplicate_entities()`` -- polymers with identical sequence
+  in the SEQRES record are mapped to the same entity and redundant Entity
+  objects are deleted.
+
+If your programs reads PDB files, it is a good idea to call setup_entities()
+after read_structure() because many of the gemmi functions depend on it.
+
+Here is a snippet that converts PDB to mmCIF:
 
 .. doctest::
 
@@ -1811,8 +1463,7 @@ sequence from the model to the full sequence (SEQRES) and sets
 accordingly. It doesn't do anything if ``label_seq`` is already set or
 if the full sequence is not known.
 
-The Entity object may change in the future.
-Here we only show its properties in an example:
+Properties of the Entity class are shown in this example:
 
 .. doctest::
 
@@ -1823,7 +1474,7 @@ Here we only show its properties in an example:
   >>> ent.name
   'A'
   >>> ent.subchains
-  ['Apoly']
+  ['Axp']
   >>> ent.entity_type
   <EntityType.Polymer: 1>
   >>> ent.polymer_type
@@ -1831,7 +1482,8 @@ Here we only show its properties in an example:
   >>> ent.full_sequence[:5]
   ['MET', 'GLU', 'GLN', 'ARG', 'ILE']
 
-The last property is sequence from the PDB SEQRES record (or mmCIF equivalent).
+The last property is the sequence from the PDB SEQRES record
+(or its mmCIF equivalent).
 More details in the :ref:`section about sequence <sequence>`.
 
 Connection
@@ -2097,8 +1749,13 @@ the ``--assembly`` option in :ref:`gemmi-convert <convert>`.
 Common operations
 -----------------
 
-In Python, ``Structure`` has also methods for more specialized,
-but often needed operations:
+In Python, Structure has also methods for more specialized,
+but often needed operations.
+In C++, the corresponding functions are available in separate headers
+(such as ``modify.hpp`` and ``polyheur.hpp``) and they are often templates
+that work not only with Structure, but also with Model and Chain.
+
+We have functions that remove parts of the models:
 
 .. doctest::
 
@@ -2106,12 +1763,26 @@ but often needed operations:
   >>> st.remove_hydrogens()
   >>> st.remove_waters()
   >>> st.remove_ligands_and_waters()
-  >>> st.remove_empty_chains()
-  >>> st.assign_serial_numbers()
 
-In C++ these functions are implemented as templated free functions
-(headers ``modify.hpp`` and ``polyheur.hpp``) that can be applied
-not only to ``Structure``, but also to ``Model`` and ``Chain``.
+If it happens that all residues are removed from a chain,
+the chain is still present in ``Model.chains``.
+Usually, it doesn't matter, but if for any reasons it is preferable
+to discard empty chains, call:
+
+.. doctest::
+
+  >>> st.remove_empty_chains()
+
+After adding, removing or reordering atoms the serial numbers
+kept in property ``Atom.serial`` are no longer consecutive.
+This property is not used when writing a file (PDB and mmCIF files are
+always written with consecutive numbering of atoms),
+so you should care about this property only if your own code uses it.
+To re-number the atoms do:
+
+.. doctest::
+
+  >>> st.assign_serial_numbers()
 
 ----
 
@@ -2148,7 +1819,7 @@ In C++ this functions is in ``gemmi/assembly.hpp``.
 
 ----
 
-In Python, ``Structure`` has also methods to calculate the
+In Python, Structure has also methods to calculate the
 :ref:`bounding box <box>` for the models,
 in either Cartesian or fractional coordinates.
 Symmetry mates are not taken into account here.
@@ -2168,6 +1839,45 @@ Symmetry mates are not taken into account here.
   <gemmi.Fractional(0.85659, 0.838305, 1.32204)>
 
 In C++ these are stand-alone functions in ``gemmi/calculate.hpp``.
+
+.. _deuterium:
+
+Deuterium
+=========
+
+(Only relevant when working with models containing deuterium --
+about 0.1% of the PDB files.)
+
+In macromolecular coordinate files, hydrogen isotopes protium and
+deuterium are identified using the element names H and D, respectively.
+When a hydrogen site is modeled as a mixture of both isotopes,
+the PDB file contains alternative locations with different atom names
+but the same coordinates:
+
+.. code-block:: none
+
+  ATOM    694  HG ASER A  43      -8.832  -2.333  24.316  0.08 23.44           H
+  ATOM    695  DG BSER A  43      -8.832  -2.333  24.316  0.92 23.44           D
+      atom name^  ^altloc                                               element^
+
+Internally, it can be more convenient to store such mixture
+as a single atom site with a parameter indicating the deuterium fraction
+(e.g., 0.92 in the above example).
+It is also possible to write it to an mmCIF file in such a form,
+using Refmac's custom tag ``_atom_site.ccp4_deuterium_fraction`` to store
+the fraction parameter, but this approach is not widely supported.
+Therefore, writing it as two atoms is more portable.
+
+In gemmi, you can switch between the two representations
+(two sites or the fraction of D) with the following function:
+
+.. doctest::
+
+  >>> st.store_deuterium_as_fraction(True)
+  >>> st.store_deuterium_as_fraction(False)
+
+When the fraction parameter is used,
+``Structure.has_d_fraction`` is set to True.
 
 .. _sequence:
 
@@ -2279,7 +1989,7 @@ and calculate the Matthews coefficient:
   >>> # because of the missing TER record in this file. We need to call:
   >>> st.setup_entities()  # it should sort out chain parts
   >>> chain.get_polymer()
-  <gemmi.ResidueSpan of 141: Apoly [17(ALA) 18(ALA) 19(ALA) ... 157(SER)]>
+  <gemmi.ResidueSpan of 141: Axp [17(ALA) 18(ALA) 19(ALA) ... 157(SER)]>
   >>> st.get_entity_of(_)  # doctest: +ELLIPSIS
   <gemmi.Entity 'A' polymer polypeptide(L) object at 0x...>
   >>> weight = gemmi.calculate_sequence_weight(_.full_sequence)
@@ -3022,8 +2732,10 @@ Residue contains also a number of properties:
   >>> residue.flag
   '\x00'
 
-To check if a residue is water (normal or heavy) you may use a helper
-function:
+You may check if a residue is water with ``is_water()``.
+More specifically, normal water (residue names HOH, WAT, H2O) and heavy water
+(DOD) return true, while hydroxide ion (OH), hydronium (H3O) and all other
+residues return false.
 
 .. doctest::
 

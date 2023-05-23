@@ -20,27 +20,147 @@
 namespace gemmi {
 
 template<typename DataProxy>
-DataType check_data_type_under_symmetry(const DataProxy& proxy) {
+std::pair<DataType, size_t> check_data_type_under_symmetry(const DataProxy& proxy) {
   const SpaceGroup* sg = proxy.spacegroup();
   if (!sg)
-    return DataType::Unknown;
+    return {DataType::Unknown, 0};
   std::unordered_map<Op::Miller, int, MillerHash> seen;
   ReciprocalAsu asu(sg);
   GroupOps gops = sg->operations();
   bool centric = gops.is_centrosymmetric();
   DataType data_type = DataType::Mean;
   for (size_t i = 0; i < proxy.size(); i += proxy.stride()) {
-    auto hkl_isym = asu.to_asu(proxy.get_hkl(i), gops);
-    int sign = hkl_isym.second % 2 + 1;  // 2=positive, 1=negative
-    auto r = seen.emplace(hkl_isym.first, sign);
-    if (!r.second) {
-      if ((r.first->second & sign) != 0 || centric)
-        return DataType::Unmerged;
-      r.first->second |= sign;
-      data_type = DataType::Anomalous;
+    auto hkl_sign = asu.to_asu_sign(proxy.get_hkl(i), gops);
+    int sign = hkl_sign.second ? 2 : 1;  // 2=positive, 1=negative
+    auto r = seen.emplace(hkl_sign.first, sign);
+    if (data_type != DataType::Unmerged && !r.second) {
+      if ((r.first->second & sign) != 0 || centric) {
+        data_type = DataType::Unmerged;
+      } else {
+        r.first->second |= sign;
+        data_type = DataType::Anomalous;
+      }
     }
   }
-  return data_type;
+  return {data_type, seen.size()};
+}
+
+// "Old-style" anomalous or unmerged data is expected to have only these tags.
+inline bool possible_old_style(const ReflnBlock& rb, DataType data_type) {
+  if (rb.refln_loop == nullptr)
+    return false;
+  for (const std::string& tag : rb.refln_loop->tags) {
+    if (tag.size() < 7 + 6)
+      return false;
+    int tag_id = ialpha4_id(tag.c_str() + 7);
+    if (tag_id != ialpha4_id("inde") &&  // index_[hkl]
+        tag_id != ialpha4_id("wave") &&  // wavelength_id
+        tag_id != ialpha4_id("crys") &&  // crystal_id
+        tag_id != ialpha4_id("scal") &&  // scale_group_code
+        tag_id != ialpha4_id("stat") &&  // status
+        tag_id != ialpha4_id("inte") &&  // intensity_meas, intensity_sigma
+        (data_type == DataType::Unmerged ||
+         (tag_id != ialpha4_id("F_me") &&  // F_meas_au, F_meas_sigma_au
+          tag != "_refln.pdbx_r_free_flag")))
+      return false;
+  }
+  return true;
+}
+
+
+/// Before _refln.pdbx_F_plus/minus was introduced, anomalous data was
+/// stored as two F_meas_au reflections, say (1,1,3) and (-1,-1,-3).
+/// This function transcribes it to how the anomalous data is stored
+/// in PDBx/mmCIF nowadays:
+///  _refln.F_meas_au -> pdbx_F_plus / pdbx_F_minus,
+///  _refln.F_meas_sigma_au -> pdbx_F_plus_sigma / pdbx_F_minus_sigma.
+///  _refln.intensity_{meas,sigma} -> _refln.pdbx_F_plus{,_sigma} / ...
+inline cif::Loop transcript_old_anomalous_to_standard(const cif::Loop& loop,
+                                                      const SpaceGroup* sg) {
+  std::vector<int> positions;
+  positions.reserve(13);  // usually less, but it doesn't matter
+  for (const char* tag : {"_refln.index_h", "_refln.index_k", "_refln.index_l"}) {
+    int pos = loop.find_tag_lc(tag);
+    if (pos == -1)
+      fail("while reading old anomalous: _refln.index_{h,k,l} not found");
+    positions.push_back(pos);
+  }
+  for (const char* tag : {"_refln.status", "_refln.pdbx_r_free_flag"}) {
+    int pos = loop.find_tag_lc(tag);
+    if (pos != -1)
+      positions.push_back(pos);
+  }
+
+  cif::Loop ret;
+  ret.tags.reserve(positions.size());
+  for (int p : positions)
+    ret.tags.push_back(loop.tags[p]);
+  const char* old_labels[2][2] = {
+    {"_refln.F_meas_au", "_refln.F_meas_sigma_au"},
+    {"_refln.intensity_meas", "_refln.intensity_sigma"}
+  };
+  const char* new_labels[2][4] = {
+    {"_refln.pdbx_F_plus", "_refln.pdbx_F_plus_sigma",
+     "_refln.pdbx_F_minus", "_refln.pdbx_F_minus_sigma"},
+    {"_refln.pdbx_I_plus", "_refln.pdbx_I_plus_sigma",
+     "_refln.pdbx_I_minus", "_refln.pdbx_I_minus_sigma"}
+  };
+  size_t common_tags = positions.size();
+  for (int n = 0; n < 2; ++n) {
+    int idx = loop.find_tag(old_labels[n][0]);
+    if (idx >= 0 && idx+1 < (int)loop.width() && loop.tags[idx+1] == old_labels[n][1]) {
+      positions.insert(positions.end(), {idx, idx+1, idx, idx+1});
+      ret.tags.insert(ret.tags.end(), new_labels[n], new_labels[n] + 4);
+    }
+  }
+  if (common_tags == positions.size())
+    fail("while reading old anomalous: _refln has neither F_meas_au nor intensity_meas");
+
+  ret.values.reserve(loop.length() * ret.width());  // upper bound
+  std::unordered_map<Miller, std::string*, MillerHash> seen;
+  if (!sg)
+    sg = &get_spacegroup_p1();
+  ReciprocalAsu asu(sg);
+  GroupOps gops = sg->operations();
+  for (size_t i = 0; i < loop.values.size(); i += loop.width()) {
+    const std::string* row = &loop.values[i];
+    Miller hkl;
+    for (size_t j = 0; j < 3; ++j)
+      hkl[j] = cif::as_int(row[positions[j]]);
+    auto hkl_sign = asu.to_asu_sign(hkl, gops);
+    // pointers don't change, .reserve() above prevents re-allocations
+    std::string* new_row = ret.values.data() + ret.values.size();
+    auto r = seen.emplace(hkl_sign.first, new_row);
+    bool sign = hkl_sign.second;
+    if (r.second) {  // adding a new row
+      for (int p : positions)
+        ret.values.push_back(row[p]);
+      // Don't move hkl to asu here, only change the sign if F- is before F+.
+      if (!sign)  // negative sign
+        for (int j = 0; j < 3; ++j)
+          new_row[j] = std::to_string(-hkl[j]);
+      size_t first_absent = common_tags + (sign ? 2 : 0);
+      for (size_t j = first_absent; j < ret.width(); j += 4) {
+        new_row[j] = ".";
+        new_row[j+1] = ".";
+      }
+    } else {  // modifying existing row
+      std::string* modified_row = r.first->second;
+      if (sign)  // positive sign - this hkl might be better
+        for (int j = 0; j < 3; ++j)
+          modified_row[j] = row[positions[j]];
+      // if a status or free flag value differs, set it to null
+      for (size_t j = 3; j < common_tags; ++j)
+        if (modified_row[j] != row[positions[j]])
+          modified_row[j] = ".";
+      for (size_t j = common_tags + (sign ? 0 : 2); j < ret.width(); j += 4) {
+        modified_row[j] = row[positions[j]];
+        modified_row[j+1] = row[positions[j+1]];
+      }
+    }
+  }
+
+  return ret;
 }
 
 
@@ -49,9 +169,11 @@ struct CifToMtz {
   static const char** default_spec(bool for_merged) {
     static const char* merged[] = {
       "pdbx_r_free_flag FreeR_flag I 0",
-      "status FreeR_flag s 0", // s is a special flag
+      "status FreeR_flag I 0 o=1,f=0",
       "intensity_meas IMEAN J 1",
+      "F_squared_meas IMEAN J 1",
       "intensity_sigma SIGIMEAN Q 1",
+      "F_squared_sigma SIGIMEAN Q 1",
       "pdbx_I_plus I(+) K 1",
       "pdbx_I_plus_sigma SIGI(+) M 1",
       "pdbx_I_minus I(-) K 1",
@@ -98,13 +220,14 @@ struct CifToMtz {
     std::string col_label;
     char col_type;
     int dataset_id;
+    std::vector<std::pair<std::string, float>> code_to_number;
 
     Entry(const std::string& line) {
       std::vector<std::string> tokens;
       tokens.reserve(4);
       split_str_into_multi(line, " \t\r\n", tokens);
-      if (tokens.size() != 4)
-        fail("line should have 4 words: " + line);
+      if (tokens.size() != 4 && tokens.size() != 5)
+        fail("line should have 4 or 5 words: " + line);
       if (tokens[2].size() != 1 || tokens[3].size() != 1 ||
           (tokens[3][0] != '0' && tokens[3][0] != '1'))
         fail("incorrect line: " + line);
@@ -112,6 +235,40 @@ struct CifToMtz {
       col_label = tokens[1];
       col_type = tokens[2][0];
       dataset_id = tokens[3][0] - '0';
+      // for compatibility with older spec
+      if (col_type == 's' && tokens.size() == 4) {
+        col_type = 'I';
+        tokens.push_back("o=1,f=0");
+      }
+      if (tokens.size() == 5) {
+        std::vector<std::string> items = split_str(tokens[4], ',');
+        code_to_number.reserve(items.size());
+        for (const std::string& item : items) {
+          size_t pos = item.find('=');
+          if (pos == std::string::npos)
+            fail("wrong mapping (", item, ") in: ", line);
+          float f;
+          auto result = fast_float::from_chars(item.c_str() + pos + 1,
+                                               item.c_str() + item.size(), f);
+          if (result.ec != std::errc())
+            fail("failed to parse value in ", item, " in: ", line);
+          code_to_number.emplace_back(item.substr(0, pos), f);
+        }
+      }
+    }
+
+    float translate_code_to_number(const std::string& v) const {
+      if (v.size() == 1) {
+        for (const auto& c2n : code_to_number)
+          if (c2n.first.size() == 1 && c2n.first[0] == v[0])
+            return c2n.second;
+      } else {
+        std::string s = cif::as_string(v);
+        for (const auto& c2n : code_to_number)
+          if (c2n.first == s)
+            return c2n.second;
+      }
+      return NAN;
     }
   };
 
@@ -119,6 +276,7 @@ struct CifToMtz {
   bool force_unmerged = false;
   std::string title;
   std::vector<std::string> history = { "From gemmi-cif2mtz " GEMMI_VERSION };
+  double wavelength = NAN;
   std::vector<std::string> spec_lines;
 
   Mtz convert_block_to_mtz(const ReflnBlock& rb, std::ostream& out) const {
@@ -131,17 +289,29 @@ struct CifToMtz {
     mtz.cell = rb.cell;
     mtz.spacegroup = rb.spacegroup;
     mtz.add_dataset("HKL_base");
+
     const cif::Loop* loop = rb.refln_loop ? rb.refln_loop : rb.diffrn_refln_loop;
     if (!loop)
       fail("_refln category not found in mmCIF block: " + rb.block.name);
+    bool unmerged = force_unmerged || !rb.refln_loop;
+
+    if (!unmerged) {
+      Mtz::Dataset& ds = mtz.add_dataset("unknown");
+      if (!std::isnan(wavelength))
+        ds.wavelength = wavelength;
+      else if (rb.wavelength_count > 1)
+        out << "Warning: ignoring wavelengths, " << rb.wavelength_count
+            << " are present in block " << rb.block.name << ".\n";
+      else
+        ds.wavelength = rb.wavelength;
+    }
+
     if (verbose)
       out << "Searching tags with known MTZ equivalents ...\n";
-    bool uses_status = false;
     std::vector<int> indices;
+    std::vector<const Entry*> entries;  // used for code_to_number only
     std::string tag = loop->tags[0];
     const size_t tag_offset = rb.tag_offset();
-
-    bool unmerged = force_unmerged || !rb.refln_loop;
 
     std::vector<Entry> spec_entries;
     if (!spec_lines.empty()) {
@@ -162,6 +332,7 @@ struct CifToMtz {
       if (index == -1)
         fail("Miller index tag not found: " + tag);
       indices.push_back(index);
+      entries.push_back(nullptr);
       auto col = mtz.columns.emplace(mtz.columns.end());
       col->dataset_id = 0;
       col->type = 'H';
@@ -181,9 +352,6 @@ struct CifToMtz {
       col->label = "BATCH";
     }
 
-    if (!unmerged)
-      mtz.add_dataset("unknown").wavelength = rb.wavelength;
-
     // other columns according to the spec
     bool column_added = false;
     for (const Entry& entry : spec_entries) {
@@ -195,14 +363,11 @@ struct CifToMtz {
         continue;
       column_added = true;
       indices.push_back(index);
+      entries.push_back(entry.code_to_number.empty() ? nullptr : &entry);
       auto col = mtz.columns.emplace(mtz.columns.end());
       // dataset_id is meaningless in unmerged MTZ files
       col->dataset_id = unmerged ? 0 : entry.dataset_id;
       col->type = entry.col_type;
-      if (col->type == 's') {
-        col->type = 'I';
-        uses_status = true;
-      }
       col->label = entry.col_label;
       if (verbose)
         out << "  " << tag << " -> " << col->label << '\n';
@@ -336,24 +501,23 @@ struct CifToMtz {
     for (size_t i = 0; i < loop->values.size(); i += loop->tags.size()) {
       if (unmerged) {
         std::array<int, 3> hkl;
-        for (int ii = 0; ii != 3; ++ii)
+        for (size_t ii = 0; ii != 3; ++ii)
           hkl[ii] = cif::as_int(loop->values[i + indices[ii]]);
         int isym = hkl_mover->move_to_asu(hkl);
-        for (int j = 0; j != 3; ++j)
+        for (size_t j = 0; j != 3; ++j)
           mtz.data[k++] = (float) hkl[j];
         mtz.data[k++] = (float) isym;
         mtz.data[k++] = batch_nums.empty() ? 1.f : (float) batch_nums[row++].frame_id;
       } else {
-        for (int j = 0; j != 3; ++j)
+        for (size_t j = 0; j != 3; ++j)
           mtz.data[k++] = (float) cif::as_int(loop->values[i + indices[j]]);
       }
-      size_t j = 3;
-      if (uses_status)
-        mtz.data[k++] = status_to_freeflag(loop->values[i + indices[j++]]);
-      for (; j != indices.size(); ++j) {
+      for (size_t j = 3; j != indices.size(); ++j) {
         const std::string& v = loop->values[i + indices[j]];
         if (cif::is_null(v)) {
           mtz.data[k] = (float) NAN;
+        } else if (entries[j] != nullptr) {
+          mtz.data[k] = entries[j]->translate_code_to_number(v);
         } else {
           mtz.data[k] = (float) cif::as_number(v);
           if (std::isnan(mtz.data[k]))
@@ -361,6 +525,37 @@ struct CifToMtz {
                 << v << '\n';
         }
         ++k;
+      }
+    }
+    return mtz;
+  }
+
+  Mtz auto_convert_block_to_mtz(ReflnBlock& rb, std::ostream& out, char mode) const {
+    if (mode == 'f' && possible_old_style(rb, DataType::Anomalous))
+      *rb.refln_loop = transcript_old_anomalous_to_standard(*rb.refln_loop, rb.spacegroup);
+    Mtz mtz = convert_block_to_mtz(rb, out);
+    if (mtz.is_merged() && mode == 'a') {
+      auto type_unique = check_data_type_under_symmetry(MtzDataProxy{mtz});
+      if (type_unique.first == DataType::Anomalous) {
+        if (possible_old_style(rb, DataType::Anomalous)) {
+          out << "NOTE: data in " << rb.block.name
+              << " is read as \"old-style\" anomalous (" << rb.refln_loop->length()
+              << " -> " << type_unique.second << " rows).\n";
+          *rb.refln_loop = transcript_old_anomalous_to_standard(*rb.refln_loop,
+                                                                rb.spacegroup);
+          // this is rare, so it's OK to run the conversion twice
+          mtz = convert_block_to_mtz(rb, out);
+        } else {
+          out << "WARNING: in " << rb.block.name << ", out of "
+              << rb.refln_loop->length() << " HKLs, only " << type_unique.second
+              << " are unique under symmetry; the rest are equivalent to Friedel mates\n";
+        }
+      } else if (type_unique.first == DataType::Unmerged) {
+        out << "WARNING: in " << rb.block.name << ", out of "
+            << rb.refln_loop->length() << " HKLs, only " << type_unique.second
+            << " are unique under symmetry\n";
+        if (possible_old_style(rb, gemmi::DataType::Unmerged))
+          out << "Possibly unmerged data - you may use option --refln-to=unmerged\n";
       }
     }
     return mtz;
