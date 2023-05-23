@@ -20,7 +20,7 @@ namespace gemmi {
     os << "<gemmi.Entity '" << ent.name << "' "
        << entity_type_to_string(ent.entity_type);
     if (ent.polymer_type != PolymerType::Unknown)
-      os << ' ' << polymer_type_to_qstring(ent.polymer_type);
+      os << ' ' << polymer_type_to_string(ent.polymer_type);
     os << " object at 0x" << std::hex << (size_t)&ent << std::dec << '>';
     return os;
   }
@@ -130,6 +130,7 @@ void add_meta(py::module& m) {
     .value("Unknown", EntityType::Unknown)
     .value("Polymer", EntityType::Polymer)
     .value("NonPolymer", EntityType::NonPolymer)
+    .value("Branched", EntityType::Branched)
     .value("Water", EntityType::Water);
 
   py::enum_<PolymerType>(m, "PolymerType")
@@ -178,6 +179,15 @@ void add_meta(py::module& m) {
                      self.partner1.str(), " - ", self.partner2.str(), '>');
     });
   py::bind_vector<std::vector<Connection>>(m, "ConnectionList");
+
+  py::class_<CisPep>(m, "CisPep")
+    .def(py::init<>())
+    .def_readwrite("partner_c", &CisPep::partner_c)
+    .def_readwrite("partner_n", &CisPep::partner_n)
+    .def_readwrite("model_str", &CisPep::model_str)
+    .def_readwrite("only_altloc", &CisPep::only_altloc)
+    .def_readwrite("reported_angle", &CisPep::reported_angle)
+    ;
 
   py::class_<Helix> helix(m, "Helix");
   py::enum_<Helix::HelixClass>(helix, "HelixClass")
@@ -250,7 +260,135 @@ void add_meta(py::module& m) {
     ;
   py::bind_vector<std::vector<Assembly>>(m, "AssemblyList");
 
+  py::class_<SoftwareItem> softitem(m, "SoftwareItem");
+  py::enum_<SoftwareItem::Classification>(softitem, "Classification")
+    .value("DataCollection", SoftwareItem::Classification::DataCollection)
+    .value("DataExtraction", SoftwareItem::Classification::DataExtraction)
+    .value("DataProcessing", SoftwareItem::Classification::DataProcessing)
+    .value("DataReduction", SoftwareItem::Classification::DataReduction)
+    .value("DataScaling", SoftwareItem::Classification::DataScaling)
+    .value("ModelBuilding", SoftwareItem::Classification::ModelBuilding)
+    .value("Phasing", SoftwareItem::Classification::Phasing)
+    .value("Refinement", SoftwareItem::Classification::Refinement)
+    .value("Unspecified", SoftwareItem::Classification::Unspecified)
+    ;
+  softitem
+    .def(py::init<>())
+    .def_readwrite("name", &SoftwareItem::name)
+    .def_readwrite("version", &SoftwareItem::version)
+    .def_readwrite("date", &SoftwareItem::date)
+    .def_readwrite("classification", &SoftwareItem::classification)
+    ;
+  py::class_<ReflectionsInfo>(m, "ReflectionsInfo")
+    .def(py::init<>())
+    .def_readwrite("resolution_high", &ReflectionsInfo::resolution_high)
+    .def_readwrite("resolution_low", &ReflectionsInfo::resolution_low)
+    .def_readwrite("completeness", &ReflectionsInfo::completeness)
+    .def_readwrite("redundancy", &ReflectionsInfo::redundancy)
+    .def_readwrite("r_merge", &ReflectionsInfo::r_merge)
+    .def_readwrite("r_sym", &ReflectionsInfo::r_sym)
+    .def_readwrite("mean_I_over_sigma", &ReflectionsInfo::mean_I_over_sigma)
+    ;
+  py::class_<ExperimentInfo>(m, "ExperimentInfo")
+    .def(py::init<>())
+    .def_readwrite("method", &ExperimentInfo::method)
+    .def_readwrite("number_of_crystals", &ExperimentInfo::number_of_crystals)
+    .def_readwrite("unique_reflections", &ExperimentInfo::unique_reflections)
+    .def_readwrite("reflections", &ExperimentInfo::reflections)
+    .def_readwrite("b_wilson", &ExperimentInfo::b_wilson)
+    .def_readwrite("shells", &ExperimentInfo::shells)
+    .def_readwrite("diffraction_ids", &ExperimentInfo::diffraction_ids)
+    ;
+  py::class_<DiffractionInfo>(m, "DiffractionInfo")
+    .def(py::init<>())
+    .def_readwrite("id", &DiffractionInfo::id)
+    .def_readwrite("temperature", &DiffractionInfo::temperature)
+    .def_readwrite("source", &DiffractionInfo::source)
+    .def_readwrite("source_type", &DiffractionInfo::source_type)
+    .def_readwrite("synchrotron", &DiffractionInfo::synchrotron)
+    .def_readwrite("beamline", &DiffractionInfo::beamline)
+    .def_readwrite("wavelengths", &DiffractionInfo::wavelengths)
+    .def_readwrite("scattering_type", &DiffractionInfo::scattering_type)
+    .def_readwrite("mono_or_laue", &DiffractionInfo::mono_or_laue)
+    .def_readwrite("monochromator", &DiffractionInfo::monochromator)
+    .def_readwrite("collection_date", &DiffractionInfo::collection_date)
+    .def_readwrite("optics", &DiffractionInfo::optics)
+    .def_readwrite("detector", &DiffractionInfo::detector)
+    .def_readwrite("detector_make", &DiffractionInfo::detector_make)
+    ;
+  py::class_<CrystalInfo>(m, "CrystalInfo")
+    .def(py::init<>())
+    .def_readwrite("id", &CrystalInfo::id)
+    .def_readwrite("description", &CrystalInfo::description)
+    .def_readwrite("ph", &CrystalInfo::ph)
+    .def_readwrite("ph_range", &CrystalInfo::ph_range)
+    .def_readwrite("diffractions", &CrystalInfo::diffractions)
+    ;
+  py::class_<TlsGroup> tlsgroup(m, "TlsGroup");
+  py::class_<TlsGroup::Selection>(tlsgroup, "Selection")
+    .def(py::init<>())
+    .def_readwrite("chain", &TlsGroup::Selection::chain)
+    .def_readwrite("res_begin", &TlsGroup::Selection::res_begin)
+    .def_readwrite("res_end", &TlsGroup::Selection::res_end)
+    .def_readwrite("details", &TlsGroup::Selection::details)
+    ;
+  tlsgroup
+    .def(py::init<>())
+    .def_readwrite("id", &TlsGroup::id)
+    .def_readwrite("selections", &TlsGroup::selections)
+    .def_readwrite("origin", &TlsGroup::origin)
+    .def_readwrite("T", &TlsGroup::T)
+    .def_readwrite("L", &TlsGroup::L)
+    .def_readwrite("S", &TlsGroup::S)
+    ;
+  py::class_<BasicRefinementInfo>(m, "BasicRefinementInfo")
+    .def(py::init<>())
+    .def_readwrite("resolution_high", &BasicRefinementInfo::resolution_high)
+    .def_readwrite("resolution_low", &BasicRefinementInfo::resolution_low)
+    .def_readwrite("completeness", &BasicRefinementInfo::completeness)
+    .def_readwrite("reflection_count", &BasicRefinementInfo::reflection_count)
+    .def_readwrite("rfree_set_count", &BasicRefinementInfo::rfree_set_count)
+    .def_readwrite("r_all", &BasicRefinementInfo::r_all)
+    .def_readwrite("r_work", &BasicRefinementInfo::r_work)
+    .def_readwrite("r_free", &BasicRefinementInfo::r_free)
+    ;
+  py::class_<RefinementInfo, BasicRefinementInfo> refinfo(m, "RefinementInfo");
+  py::class_<RefinementInfo::Restr>(refinfo, "Restr")
+    .def(py::init<const std::string&>())
+    .def_readwrite("name", &RefinementInfo::Restr::name)
+    .def_readwrite("count", &RefinementInfo::Restr::count)
+    .def_readwrite("weight", &RefinementInfo::Restr::weight)
+    .def_readwrite("function", &RefinementInfo::Restr::function)
+    .def_readwrite("dev_ideal", &RefinementInfo::Restr::dev_ideal)
+    ;
+  refinfo
+    .def(py::init<>())
+    .def_readwrite("id", &RefinementInfo::id)
+    .def_readwrite("cross_validation_method", &RefinementInfo::cross_validation_method)
+    .def_readwrite("rfree_selection_method", &RefinementInfo::rfree_selection_method)
+    .def_readwrite("bin_count", &RefinementInfo::bin_count)
+    .def_readwrite("bins", &RefinementInfo::bins)
+    .def_readwrite("mean_b", &RefinementInfo::mean_b)
+    .def_readwrite("aniso_b", &RefinementInfo::aniso_b)
+    .def_readwrite("luzzati_error", &RefinementInfo::luzzati_error)
+    .def_readwrite("dpi_blow_r", &RefinementInfo::dpi_blow_r)
+    .def_readwrite("dpi_blow_rfree", &RefinementInfo::dpi_blow_rfree)
+    .def_readwrite("dpi_cruickshank_r", &RefinementInfo::dpi_cruickshank_r)
+    .def_readwrite("dpi_cruickshank_rfree", &RefinementInfo::dpi_cruickshank_rfree)
+    .def_readwrite("cc_fo_fc", &RefinementInfo::cc_fo_fc)
+    .def_readwrite("cc_fo_fc_free", &RefinementInfo::cc_fo_fc_free)
+    .def_readwrite("restr_stats", &RefinementInfo::restr_stats)
+    .def_readwrite("tls_groups", &RefinementInfo::tls_groups)
+    .def_readwrite("remarks", &RefinementInfo::remarks)
+    ;
   py::class_<Metadata>(m, "Metadata")
     .def_readwrite("authors", &Metadata::authors)
+    //.def_readwrite("experiments", &Metadata::experiments)
+    //.def_readwrite("crystals", &Metadata::crystals)
+    .def_readwrite("refinement", &Metadata::refinement)
+    .def_readwrite("software", &Metadata::software)
+    //.def_readwrite("solved_by", &Metadata::solved_by)
+    //.def_readwrite("starting_model", &Metadata::starting_model)
+    //.def_readwrite("remark_300_detail", &Metadata::remark_300_detail)
     ;
 }

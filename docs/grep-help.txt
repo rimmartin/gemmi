@@ -12,6 +12,7 @@ Options:
   -f, --file=FILE          obtain file (or PDB ID) list from FILE
   --name=PATTERN           filename glob pattern used in recursive grep; by
                            default, *.cif and *.cif.gz files are searched
+  -S, --pdb-sf             if PDB ID is given, search structure factor file
   -m, --max-count=NUM      print max NUM values per file
   -O, --one-block          optimize assuming one block per file
   -a, --and=tag            Append delimiter (default ';') and the tag value
@@ -20,6 +21,7 @@ Options:
   -H, --with-filename      print the file name for each match
   -b, --no-blockname       suppress the block name on output
   -t, --with-tag           print the tag name for each match
+  -T, --only-tags          print only matching tags, not values
   -l, --files-with-tag     print only names of files with the tag
   -L, --files-without-tag  print only names of files without the tag
   -c, --count              print only a count of values per block or file

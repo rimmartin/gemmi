@@ -23,7 +23,7 @@
 #include "fileutil.hpp" // for path_basename, file_open
 #include "input.hpp"    // for FileStream
 #include "model.hpp"    // for Atom, Structure, ...
-#include "polyheur.hpp" // for assign_subchain_names
+#include "polyheur.hpp" // for assign_subchains
 #include "remarks.hpp"  // for read_metadata_from_remarks, read_int, ...
 
 namespace gemmi {
@@ -199,11 +199,17 @@ void process_conn(Structure& st, const std::vector<std::string>& conn_records) {
       if (record.length() < 22)
         continue;
       const char* r = record.c_str();
-      std::string cname = read_string(r + 14, 2);
-      ResidueId rid = read_res_id(r + 17, r + 11);
-      for (Model& model : st.models)
-        if (Residue* res = model.find_residue(cname, rid))
-          res->is_cis = true;
+      CisPep cispep;
+      cispep.partner_c.chain_name = read_string(r + 14, 2);
+      cispep.partner_c.res_id = read_res_id(r + 17, r + 11);
+      cispep.partner_n.chain_name = read_string(r + 28, 2);
+      cispep.partner_n.res_id = read_res_id(r + 31, r + 25);
+      // In files with a single model in the PDB CISPEP modNum is 0,
+      // but _struct_mon_prot_cis.pdbx_PDB_model_num is 1.
+      cispep.model_str = st.models.size() == 1 ? st.models[0].name
+                                               : read_string(r + 43, 3);
+      cispep.reported_angle = read_double(r + 53, 6);
+      st.cispeps.push_back(cispep);
     }
   }
 }
@@ -211,7 +217,6 @@ void process_conn(Structure& st, const std::vector<std::string>& conn_records) {
 template<typename Stream>
 Structure read_pdb_from_stream(Stream&& stream, const std::string& source,
                                const PdbReadOptions& options) {
-  using namespace pdb_impl;
   int line_num = 0;
   auto wrong = [&line_num](const std::string& msg) {
     fail("Problem in line " + std::to_string(line_num) + ": " + msg);
@@ -298,6 +303,10 @@ Structure read_pdb_from_stream(Stream&& stream, const std::string& source,
       // never have 4-character names, so H is assumed.
       else if (alpha_up(line[12]) == 'H' && line[15] != ' ')
         atom.element = El::H;
+      // Similarly Deuterium (DXXX), but here alternatives are Dy, Db and Ds.
+      // Only Dysprosium is present in the PDB - in a single entry as of 2022.
+      else if (alpha_up(line[12]) == 'D' && line[15] != ' ')
+        atom.element = El::D;
       // Old versions of the PDB format had hydrogen names such as "1HB ".
       // Some MD files use similar names for other elements ("1C4A" -> C).
       else if (is_digit(line[12]))
@@ -400,6 +409,27 @@ Structure read_pdb_from_stream(Stream&& stream, const std::string& source,
         std::string res_name = read_string(line+i, 3);
         if (!res_name.empty())
           ent.full_sequence.emplace_back(res_name);
+      }
+
+    } else if (is_record_type(line, "MODRES")) {
+      ModRes modres;
+      modres.chain_name = read_string(line + 15, 2);
+      modres.res_id = read_res_id(line + 18, line + 12);
+      modres.parent_comp_id = read_string(line + 24, 3);
+      if (len >= 30)
+        // this field is named comment in PDB spec, but details in mmCIF
+        modres.details = read_string(line + 29, 41);
+      // Refmac's extension: 73-80 mod_id
+      // Check for spaces to make sure it's not an overflowed comment
+      if (len >= 73 && line[70] == ' ' && line[71] == ' ')
+        modres.mod_id = read_string(line + 72, 6);
+      st.mod_residues.push_back(modres);
+
+    } else if (is_record_type(line, "HETNAM")) {
+      if (len > 71 && line[70] == ' ') {
+        std::string full_code = read_string(line + 71, 8);
+        if (!full_code.empty())
+          st.shortened_ccd_codes.push_back({full_code, read_string(line + 11, 3)});
       }
 
     } else if (is_record_type(line, "DBREF")) { // DBREF or DBREF1 or DBREF2
@@ -591,10 +621,9 @@ Structure read_pdb_from_stream(Stream&& stream, const std::string& source,
   if (st.models.empty())
     st.models.emplace_back("1");
 
-  for (Model& mod : st.models)
-    for (Chain& ch : mod.chains)
-      if (ch.residues[0].entity_type != EntityType::Unknown)
-        assign_subchain_names(ch);
+  // Here we assign Residue::subchain, but for chains with all
+  // Residue::entity_type assigned, i.e. for chains with TER.
+  assign_subchains(st, /*force=*/false, /*fail_if_unknown=*/false);
 
   for (Chain& ch : st.models[0].chains)
     if (Entity* entity = st.get_entity(ch.name))
@@ -610,6 +639,8 @@ Structure read_pdb_from_stream(Stream&& stream, const std::string& source,
 
   if (!options.skip_remarks)
     read_metadata_from_remarks(st);
+
+  restore_full_ccd_codes(st);
 
   return st;
 }

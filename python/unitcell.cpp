@@ -20,7 +20,8 @@ using namespace gemmi;
 static std::string triple(double x, double y, double z) {
   using namespace std;  // VS2015/17 doesn't like std::snprintf
   char buf[128];
-  snprintf(buf, 128, "%g, %g, %g", x, y, z);
+  auto r = [](double d) { return std::fabs(d) >= 1e-15 ? d : 0; };
+  snprintf(buf, 128, "%g, %g, %g", r(x), r(y), r(z));
   return std::string(buf);
 }
 
@@ -58,6 +59,7 @@ template<typename T> void add_smat33(py::module& m, const char* name) {
     .def("nonzero", &M::nonzero)
     .def("determinant", &M::determinant)
     .def("inverse", &M::inverse)
+    .def("scaled", &M::template scaled<T>)
     .def("added_kI", &M::added_kI)
     .def("r_u_r", (double (M::*)(const Vec3&) const) &M::r_u_r)
     .def("r_u_r", [](const M& self, py::array_t<int> arr) {
@@ -101,6 +103,7 @@ void add_unitcell(py::module& m) {
     .def_readwrite("x", &Vec3::x)
     .def_readwrite("y", &Vec3::y)
     .def_readwrite("z", &Vec3::z)
+    .def("normalized", &Vec3::normalized)
     .def("dot", &Vec3::dot)
     .def("cross", &Vec3::cross)
     .def("length", &Vec3::length)
@@ -175,7 +178,8 @@ void add_unitcell(py::module& m) {
   add_smat33<double>(m, "SMat33d");
   add_smat33<float>(m, "SMat33f");
 
-  py::class_<Transform>(m, "Transform")
+  py::class_<Transform> transform(m, "Transform");
+  transform
     .def(py::init<>())
     .def(py::init([](const Mat33& m, const Vec3& v) {
       Transform* tr = new Transform();
@@ -190,12 +194,7 @@ void add_unitcell(py::module& m) {
     .def("combine", &Transform::combine)
     .def("is_identity", &Transform::is_identity)
     .def("approx", &Transform::approx, py::arg("other"), py::arg("epsilon"));
-
-  py::class_<Correlation>(m, "Correlation")
-    .def_readonly("n", &Correlation::n)
-    .def("coefficient", &Correlation::coefficient)
-    .def("mean_ratio", &Correlation::mean_ratio)
-    ;
+  transform.attr("__matmul__") = transform.attr("combine");
 
   py::class_<Position, Vec3>(m, "Position")
     .def(py::init<double,double,double>())
@@ -218,7 +217,9 @@ void add_unitcell(py::module& m) {
     });
   py::class_<Fractional, Vec3>(m, "Fractional")
     .def(py::init<double,double,double>())
+    .def(py::init<const Vec3&>())
     .def("wrap_to_unit", &Fractional::wrap_to_unit)
+    .def("wrap_to_zero", &Fractional::wrap_to_zero)
     .def("__getitem__", (double (Fractional::*)(int) const) &Fractional::at)
     .def(py::self + py::self)
     .def(py::self - py::self)
@@ -235,6 +236,7 @@ void add_unitcell(py::module& m) {
 
   py::class_<NearestImage>(m, "NearestImage")
     .def("dist", &NearestImage::dist)
+    .def("same_asu", &NearestImage::same_asu)
     .def("symmetry_code", &NearestImage::symmetry_code, py::arg("underscore")=true)
     .def_readonly("sym_idx", &NearestImage::sym_idx)
     .def_property_readonly("pbc_shift", [](const NearestImage& self) {
@@ -288,6 +290,7 @@ void add_unitcell(py::module& m) {
     .def("calculate_u_eq", &UnitCell::calculate_u_eq)
     .def("fractionalize", &UnitCell::fractionalize)
     .def("orthogonalize", &UnitCell::orthogonalize)
+    .def("orthogonalize_box", &UnitCell::orthogonalize_box)
     .def("op_as_transform", &UnitCell::op_as_transform)
     .def("volume_per_image", &UnitCell::volume_per_image)
     .def("find_nearest_image", &UnitCell::find_nearest_image,

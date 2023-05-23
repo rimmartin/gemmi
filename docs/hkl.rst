@@ -184,7 +184,7 @@ To get all columns of the specified type use:
 .. doctest::
 
   >>> mtz.columns_with_type('Q')
-  MtzColumnRefs[<gemmi.Mtz.Column SIGFP type Q>, <gemmi.Mtz.Column SIGI type Q>]
+  [<gemmi.Mtz.Column SIGFP type Q>, <gemmi.Mtz.Column SIGI type Q>]
 
 Different programs use different column names for the same thing.
 To access the column free set flags you may use function ``rfree_column``
@@ -523,29 +523,6 @@ To show that it really has an effect we print the appropriate
   >>> mtz.get_size_for_hkl()
   [10, 10, 20]
 
-A merged MTZ file uses one of the equivalent hkl indices
-for each reflection. The used hkl is usually the one from
-the reciprocal-space ASU. Both CCP4 and CCTBX use the same
-reciprocal-space ASU definitions. But if you'd have a different
-choice of hkls in the file, you may switch to the usual one with:
-
-.. doctest::
-
-  >>> mtz.ensure_asu()
-
-(You may also call ``mtz.ensure_asu(tnt=True)`` to use the ASU defined
-in the `TNT <https://www.uoxray.uoregon.edu/tnt/manual/node110.html>`_
-program, but it is unlikely that you will ever need it).
-
-To sort data rows by the *h,k,l* indices call ``Mtz::sort()``:
-
-.. doctest::
-
-  >>> mtz.sort()  # returns False iff the data was already sorted
-  False
-  >>> mtz.sort_order  # sort() always sorts by h,k,l and sets sort_order to:
-  [1, 2, 3, 0, 0]
-
 Columns can be removed with ``Mtz::remove_column(index)``,
 where index is 0-based column index:
 
@@ -671,7 +648,7 @@ stores all numbers as 32-bit floats).
   :skipif: numpy is None
 
   >>> data = numpy.array([[4, 13, 8, 1, 453.9, 19.12],
-  ...                     [4, 13, 9, 0, 102.0, 27.31]], numpy.float)
+  ...                     [4, 13, 9, 0, 102.0, 27.31]], numpy.float32)
   >>> mtz.set_data(data)
   >>> mtz
   <gemmi.Mtz with 6 columns, 2 reflections>
@@ -704,15 +681,88 @@ You do not need to call ``update_reso()`` before writing an MTZ file --
 the values for the RESO record are re-calculated automatically when the file
 is written.
 
+
+.. _reindexing:
+
+Reindexing, ASU, sorting
+------------------------
+
+The reindexing function changes:
+
+* Miller indices of reflections
+  (if new indices would be fractional the reflection is removed),
+* space group,
+* unit cell parameters (in MTZ records CELL and DCELL, and in batch headers).
+
+Reindexing takes as an argument the operator that is to be applied
+to Miller indices. In Python, it returns a textual message for the user:
+
+.. doctest::
+
+  >>> mtz.reindex(gemmi.Op('k,l,h'))
+  'Real space transformation: y,z,x\nSpace group changed from P 21 21 2 to P 21 2 21.\n'
+
+If reindex() is called on merged data,
+it should be followed by a call to ensure_asu().
+
+See also: :ref:`gemmi-reindex <gemmi-reindex>`.
+
+----
+
+A merged MTZ file can, in principle, use any of the equivalent hkl indices
+for each reflection, but it is preferable to always use,
+for a given space group, indices from the same reciprocal-space ASU.
+The choice of ASU is arbitrary, but fortunately both CCP4 and CCTBX use
+the same reciprocal-space ASU definitions. If you have different hkls in Mtz,
+you may switch to the usual ones with:
+
+.. doctest::
+
+  >>> mtz.ensure_asu()
+
+(You may also call ``mtz.ensure_asu(tnt=True)`` to use the ASU defined
+in the `TNT <https://www.uoxray.uoregon.edu/tnt/manual/node110.html>`_
+program, but it is unlikely that you will ever need it).
+
+When appropriate, changing hkl indices is also:
+
+* shifting phases (column type P),
+* changing phase probabilities -- Hendrickson-Lattman coefficients
+  (column type A),
+* swapping anomalous pairs, such as I(+)/I(-), F(+)/F(-) and E(+)/E(-),
+* changing the sign of anomalous differences (column type D).
+
+**Current limitations:** H-L coefficients may not be handled properly.
+
+----
+
+To sort data rows by the *h,k,l* indices call ``Mtz::sort()``:
+
+.. doctest::
+
+  >>> mtz.sort()  # returns False iff the data was already sorted
+  False
+  >>> mtz.sort_order  # sort() always sorts by h,k,l and sets sort_order to:
+  [1, 2, 3, 0, 0]
+
+If you'd like to use the first 5 columns for sorting (for multirecord data),
+call ``mtz.sort(use_first=5)``.
+
+.. doctest::
+  :hide:
+
+  >>> mtz.sort(use_first=5)
+  False
+  >>> mtz.sort_order
+  [1, 2, 3, 4, 5]
+
+
 Writing
 -------
 
 In C++, the MTZ file can be written to a file or to a memory buffer
 using one of the functions::
 
-  // In exactly one compilation unit define this before including one of
-  // mtz.hpp, to_mmcif.hpp, to_pdb.hpp.
-  #define GEMMI_WRITE_IMPLEMENTATION
   #include <gemmi/mtz.hpp>
 
   void Mtz::write_to_cstream(std::FILE* stream) const
@@ -728,39 +778,6 @@ In Python we have a single function for writing to a file:
 Here is a complete C++ example how to create a new MTZ file:
 
 .. literalinclude:: code/newmtz.cpp
-
-
-.. _reindexing:
-
-Reindexing
-----------
-
-Reindexing changes multiple things:
-
-* Miller indices of reflections
-  (if new indices would be fractional the reflection is removed),
-* space group,
-* unit cell parameters (in MTZ records CELL and DCELL, and in batch headers),
-* phases (column type P) can be shifted,
-* the same with phase probabilities -- Hendrickson-Lattman coefficients
-  (column type A) can be modified,
-* data in anomalous pairs, such as I(+)/I(-), F(+)/F(-) and E(+)/E(-),
-  can be swapped,
-* anomalous difference (column type D) can change the sign.
-
-Currently, gemmi provides a reindexing function that works only with Mtz
-objects. In C++, this function is in ``reindexing.hpp``.
-In Python, it is a method that returns a textual message for the user:
-
-.. doctest::
-
-  >>> mtz.reindex(gemmi.Op('k,l,h'))
-  'Real space transformation: z,x,y\nSpace group changed from P 21 21 2 to P 2 21 21.\n'
-
-**Current limitations:** H-L coefficients are not handled yet.
-In general, reindexing has not been tested enough. Bugs must be expected.
-
-See also: :ref:`gemmi-reindex <gemmi-reindex>`.
 
 SF mmCIF
 ========
@@ -2132,7 +2149,7 @@ and *B*\ :sub:`min`):
 
   >>> dencalc.set_refmac_compatible_blur(st[0])
   >>> dencalc.blur
-  49.846486874188685
+  31.01648695048263
 
 The :ref:`sfcalc <sfcalc>` program can be used to test different choices
 of *B*\ :sub:`extra`.
@@ -2172,7 +2189,7 @@ We either multiply individual values by ``mott_bethe_factor()``
 .. doctest::
 
   >>> dc.mott_bethe_factor([3,4,5]) * grid.get_value(3,4,5)
-  (54.064399348274954+52.96943978655508j)
+  (54.06369910627539+52.97058061981686j)
 
 or we call ``prepare_asu_data()`` with ``mott_bethe=True``:
 
@@ -2181,7 +2198,7 @@ or we call ``prepare_asu_data()`` with ``mott_bethe=True``:
 
   >>> asu_data = grid.prepare_asu_data(dmin=2.5, mott_bethe=True, unblur=dencalc.blur)
   >>> asu_data.value_array[numpy.all(asu_data.miller_array == [3,4,5], axis=1)]
-  array([54.064396+52.969437j], dtype=complex64)
+  array([54.063698+52.97058j], dtype=complex64)
 
 That is all.
 If you would like to separate positions of hydrogen nuclei

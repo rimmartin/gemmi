@@ -1,47 +1,43 @@
 // Copyright 2017 Global Phasing Ltd.
 //
-// to_str(float|double), gf_snprintf - wrappers around stb_sprintf.
+// interface to stb_sprintf: snprintf_z, to_str(float|double)
 
 #ifndef GEMMI_SPRINTF_HPP_
 #define GEMMI_SPRINTF_HPP_
 
-#ifdef USE_STD_SNPRINTF  // for benchmarking and testing only
-# include <cstdio>
-# define gstb_snprintf std::snprintf
-# define gstb_sprintf std::sprintf
-#else
-# ifdef GEMMI_WRITE_IMPLEMENTATION
-#  define STB_SPRINTF_IMPLEMENTATION
-#  define STB_SPRINTF_NOUNALIGNED 1
-# endif
-# define STB_SPRINTF_DECORATE(name) gstb_##name
-// To use system stb_sprintf.h (not recommended, but some Linux distros
-// don't like bundled libraries) just remove third_party/stb_sprintf.h.
-# if defined(__has_include)
-#  if !__has_include("third_party/stb_sprintf.h")
-#   define GEMMI_USE_SYSTEM_STB 1
-#  endif
-# endif
-# ifdef GEMMI_USE_SYSTEM_STB
-#  warning "Using system stb_sprintf.h, not the bundled one. It may not work."
-#  include <stb/stb_sprintf.h>
-# else
-#  include "third_party/stb_sprintf.h"
+#include <string>
+#ifdef __has_include
+# if __has_include(<charconv>)
+#  include <charconv>
 # endif
 #endif
-#include <string>
+
+#include "fail.hpp"  // for GEMMI_DLL
 
 namespace gemmi {
 
+// On MinGW format(printf) doesn't support %zu.
+#if (defined(__GNUC__) && !defined(__MINGW32__)) || defined(__clang__)
+# define GEMMI_ATTRIBUTE_FORMAT(fmt,va) __attribute__((format(printf,fmt,va)))
+#else
+# define GEMMI_ATTRIBUTE_FORMAT(fmt,va)
+#endif
+/// stb_snprintf in gemmi namespace - like snprintf, but ignores locale
+/// and is always zero-terminated (hence _z).
+GEMMI_DLL int snprintf_z(char *buf, int count, char const *fmt, ...)
+                                                         GEMMI_ATTRIBUTE_FORMAT(3,4);
+/// stb_sprintf in gemmi namespace
+GEMMI_DLL int sprintf_z(char *buf, char const *fmt, ...) GEMMI_ATTRIBUTE_FORMAT(2,3);
+
 inline std::string to_str(double d) {
   char buf[24];
-  int len = gstb_sprintf(buf, "%.9g", d);
+  int len = sprintf_z(buf, "%.9g", d);
   return std::string(buf, len > 0 ? len : 0);
 }
 
 inline std::string to_str(float d) {
   char buf[16];
-  int len = gstb_sprintf(buf, "%.6g", d);
+  int len = sprintf_z(buf, "%.6g", d);
   return std::string(buf, len > 0 ? len : 0);
 }
 
@@ -49,33 +45,32 @@ template<int Prec>
 std::string to_str_prec(double d) {
   static_assert(Prec >= 0 && Prec < 7, "unsupported precision");
   char buf[16];
-  int len = d > -1e8 && d < 1e8 ? gstb_sprintf(buf, "%.*f", Prec, d)
-                                : gstb_sprintf(buf, "%g", d);
+  int len = d > -1e8 && d < 1e8 ? sprintf_z(buf, "%.*f", Prec, d)
+                                : sprintf_z(buf, "%g", d);
   return std::string(buf, len > 0 ? len : 0);
 }
 
-#ifdef USE_STD_SNPRINTF
-# ifdef _MSC_VER // VS2015/17 doesn't like std::snprintf
-#  define gf_snprintf snprintf
-# else
-#  define gf_snprintf std::snprintf
-# endif
+/// zero-terminated to_chars()
+inline char* to_chars_z(char* first, char* last, int value) {
+#if __cpp_lib_to_chars >= 201611L
+  auto result = std::to_chars(first, last-1, value);
+  *result.ptr = '\0';
+  return result.ptr;
 #else
-
-// this is equivalent of stbsp_snprintf, but with __attribute__(format)
-#if (defined(__GNUC__) && !defined(__MINGW32__)) || defined(__clang)
-__attribute__((format(printf, 3, 4)))
+  int n = snprintf_z(first, int(last - first), "%d", value);
+  return std::min(first + n, last - 1);
 #endif
-inline int gf_snprintf(char *buf, int count, char const *fmt, ...) {
-   int result;
-   va_list va;
-   va_start(va, fmt);
-   result = gstb_vsnprintf(buf, count, fmt, va);
-   va_end(va);
-   return result;
 }
-
+inline char* to_chars_z(char* first, char* last, size_t value) {
+#if __cpp_lib_to_chars >= 201611L
+  auto result = std::to_chars(first, last-1, value);
+  *result.ptr = '\0';
+  return result.ptr;
+#else
+  int n = snprintf_z(first, int(last - first), "%zu", value);
+  return std::min(first + n, last - 1);
 #endif
+}
 
 } // namespace gemmi
 #endif

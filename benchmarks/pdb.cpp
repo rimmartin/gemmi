@@ -62,7 +62,7 @@ static void neighbor_search_find(benchmark::State& state) {
   Position ref = model.chains.at(0).residues.at(2).atoms.at(0).pos;
   NeighborSearch ns(st.models.at(0), st.cell, 5.0);
   while (state.KeepRunning()) {
-    auto r = ns.find_atoms(ref, '\0', 4);
+    auto r = ns.find_atoms(ref, '\0', 0, 4);
     benchmark::DoNotOptimize(r);
   }
 }
@@ -76,7 +76,7 @@ static void neighbor_search_for_each(benchmark::State& state) {
   while (state.KeepRunning()) {
     double sum = 0;
     ns.for_each(ref, '\0', 4,
-                [&sum](NeighborSearch::Mark&, float d) { sum += d; });
+                [&sum](NeighborSearch::Mark&, double d) { sum += d; });
     benchmark::DoNotOptimize(sum);
   }
 }

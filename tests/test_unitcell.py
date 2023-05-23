@@ -2,6 +2,7 @@
 
 import unittest
 from math import pi  # , isnan
+import pickle
 from random import random
 import sys
 import gemmi
@@ -73,6 +74,9 @@ class TestUnitCell(unittest.TestCase):
         cell = gemmi.UnitCell(35.996, 41.601, 45.756, 67.40, 66.90, 74.85)
         o_f = cell.orth.mat.multiply(cell.frac.mat)
         self.assertTrue(o_f.approx(gemmi.Mat33(), 1e-15))
+        tr_o_f = cell.orth @ cell.frac
+        self.assertTrue(tr_o_f.approx(gemmi.Transform(), 1e-15))
+        self.assertTrue(tr_o_f.approx(tr_o_f.inverse(), 1e-15))
         if sys.version_info >= (3, 5):
             mat = eval('cell.orth.mat @ cell.frac.mat')  # avoid SyntaxError
             self.assertTrue(mat.approx(gemmi.Mat33(), 1e-15))
@@ -102,6 +106,20 @@ class TestUnitCell(unittest.TestCase):
         rmt = cell.reciprocal_metric_tensor()
         assert_almost_equal_seq(self, rmt.elements_pdb(), cctbx_rmm,
                                 delta=1e-15)
+
+    def test_ortogonalize_box(self):
+        cell = gemmi.UnitCell(100, 105, 113, 90, 120, 90)
+        box = gemmi.FractionalBox()
+        box.minimum = gemmi.Fractional(0, 0, 0)
+        box.maximum = gemmi.Fractional(1, 1, 1)
+        obox = cell.orthogonalize_box(box)
+        self.assertTrue(obox.minimum.x < 0)
+        self.assertEqual(obox.minimum.y, 0)
+        self.assertEqual(obox.minimum.z, 0)
+        self.assertEqual(obox.maximum.x, cell.a)
+        self.assertEqual(obox.maximum.y, cell.b)
+        c_spacing = 1. / cell.reciprocal().c
+        self.assertAlmostEqual(obox.maximum.z, c_spacing, delta=1e-12)
 
     def test_is_similar(self):
         cell = gemmi.UnitCell(35.996, 41.601, 45.756, 67.40, 66.90, 74.85)
@@ -144,11 +162,6 @@ class TestUnitCell(unittest.TestCase):
                                 delta=1e-6)
 
     def test_pickling(self):
-        try:
-            import cPickle as pickle  # Use cPickle on Python 2.7
-        except ImportError:
-            import pickle
-
         cell = gemmi.UnitCell(35.996, 41.601, 45.756, 67.40, 66.90, 74.85)
         pkl_string = pickle.dumps(cell, protocol=pickle.HIGHEST_PROTOCOL)
         result = pickle.loads(pkl_string)

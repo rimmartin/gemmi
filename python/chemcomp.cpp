@@ -64,14 +64,15 @@ void add_chemcomp(py::module& m) {
     .def_readwrite("comp", &Restraints::AtomId::comp)
     .def_readwrite("atom", &Restraints::AtomId::atom)
     .def("get_from",
-         (Atom* (Restraints::AtomId::*)(Residue&, Residue*, char) const)
+         (Atom* (Restraints::AtomId::*)(Residue&, Residue*, char, char) const)
          &Restraints::AtomId::get_from,
-         py::arg("res1"), py::arg("res2"), py::arg("altloc"),
+         py::arg("res1"), py::arg("res2"), py::arg("altloc1"), py::arg("altloc2"),
          py::return_value_policy::reference)
     .def("__repr__", [](const Restraints::AtomId& self) {
         return cat("<gemmi.Restraints.AtomId ", self.comp, ' ', self.atom, '>');
     });
   restraintsbond
+    .def(py::init<>())
     .def_readwrite("id1", &Restraints::Bond::id1)
     .def_readwrite("id2", &Restraints::Bond::id2)
     .def_readwrite("type", &Restraints::Bond::type)
@@ -85,6 +86,7 @@ void add_chemcomp(py::module& m) {
         return "<gemmi.Restraints.Bond " + self.str() + ">";
     });
   restraintsangle
+    .def(py::init<>())
     .def_readwrite("id1", &Restraints::Angle::id1)
     .def_readwrite("id2", &Restraints::Angle::id2)
     .def_readwrite("id3", &Restraints::Angle::id3)
@@ -94,6 +96,7 @@ void add_chemcomp(py::module& m) {
         return "<gemmi.Restraints.Angle " + self.str() + ">";
     });
   restraintstorsion
+    .def(py::init<>())
     .def_readwrite("label", &Restraints::Torsion::label)
     .def_readwrite("id1", &Restraints::Torsion::id1)
     .def_readwrite("id2", &Restraints::Torsion::id2)
@@ -106,6 +109,7 @@ void add_chemcomp(py::module& m) {
         return "<gemmi.Restraints.Torsion " + self.str() + ">";
     });
   restraintschirality
+    .def(py::init<>())
     .def_readwrite("id_ctr", &Restraints::Chirality::id_ctr)
     .def_readwrite("id1", &Restraints::Chirality::id1)
     .def_readwrite("id2", &Restraints::Chirality::id2)
@@ -116,6 +120,7 @@ void add_chemcomp(py::module& m) {
         return "<gemmi.Restraints.Chirality " + self.str() + ">";
     });
   restraintsplane
+    .def(py::init<>())
     .def_readwrite("label", &Restraints::Plane::label)
     .def_readwrite("ids", &Restraints::Plane::ids)
     .def_readwrite("esd", &Restraints::Plane::esd)
@@ -123,6 +128,7 @@ void add_chemcomp(py::module& m) {
         return "<gemmi.Restraints.Plane " + self.str() + ">";
     });
   restraints
+    .def(py::init<>())
     .def_readwrite("bonds", &Restraints::bonds)
     .def_readwrite("angles", &Restraints::angles)
     .def_readwrite("torsions", &Restraints::torsions)
@@ -143,6 +149,18 @@ void add_chemcomp(py::module& m) {
     .def("chiral_abs_volume", &Restraints::chiral_abs_volume)
     ;
 
+  py::enum_<ChemComp::Group>(chemcomp, "Group")
+      .value("Peptide",    ChemComp::Group::Peptide)
+      .value("PPeptide",   ChemComp::Group::PPeptide)
+      .value("MPeptide",   ChemComp::Group::MPeptide)
+      .value("Dna",        ChemComp::Group::Dna)
+      .value("Rna",        ChemComp::Group::Rna)
+      .value("DnaRna",     ChemComp::Group::DnaRna)
+      .value("Pyranose",   ChemComp::Group::Pyranose)
+      .value("Ketopyranose", ChemComp::Group::Ketopyranose)
+      .value("Furanose",   ChemComp::Group::Furanose)
+      .value("NonPolymer", ChemComp::Group::NonPolymer)
+      .value("Null",       ChemComp::Group::Null);
   chemcompatom
     .def_readonly("id", &ChemComp::Atom::id)
     .def_readonly("el", &ChemComp::Atom::el)
@@ -150,11 +168,17 @@ void add_chemcomp(py::module& m) {
     .def_readonly("chem_type", &ChemComp::Atom::chem_type)
     .def("is_hydrogen", &ChemComp::Atom::is_hydrogen)
     ;
+  py::class_<ChemComp::Aliasing>(chemcomp, "Aliasing")
+    .def_readonly("group", &ChemComp::Aliasing::group)
+    .def("name_from_alias", &ChemComp::Aliasing::name_from_alias)
+    ;
   chemcomp
     .def_readwrite("name", &ChemComp::name)
     .def_readwrite("group", &ChemComp::group)
     .def_readonly("atoms", &ChemComp::atoms)
     .def_readonly("rt", &ChemComp::rt)
+    .def_static("group_str", &ChemComp::group_str)
+    .def("set_group", &ChemComp::set_group)
     .def("get_atom", &ChemComp::get_atom)
     .def("find_atom", [](ChemComp& self, const std::string& atom_id) {
         auto it = self.find_atom(atom_id);
@@ -164,5 +188,4 @@ void add_chemcomp(py::module& m) {
     ;
   m.def("make_chemcomp_from_block", &make_chemcomp_from_block);
   m.def("add_chemcomp_to_block", &add_chemcomp_to_block);
-  m.def("make_chemcomp_with_restraints", &make_chemcomp_with_restraints);
 }

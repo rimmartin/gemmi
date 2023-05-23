@@ -14,6 +14,7 @@
 #include "util.hpp"     // for vector_remove_if
 #include "mtz.hpp"      // for Mtz
 #include "refln.hpp"    // for ReflnBlock
+#include "stats.hpp"    // for Correlation
 #include "xds_ascii.hpp" // for XdsAscii
 
 namespace gemmi {
@@ -250,14 +251,10 @@ struct Intensities {
         }
         continue;
       }
-      auto hkl_isym = asu.to_asu(refl.hkl, gops);
-      refl.hkl = hkl_isym.first;
-      if (!merged) {
-        if (gops.is_reflection_centric(refl.hkl))
-          refl.isign = 1;
-        else
-          refl.isign = (hkl_isym.second % 2 == 0 ? -1 : 1);
-      }
+      bool sign;
+      std::tie(refl.hkl, sign) = asu.to_asu_sign(refl.hkl, gops);
+      if (!merged)
+        refl.isign = sign ? 1 : -1;
     }
   }
 

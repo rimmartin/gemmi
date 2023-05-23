@@ -6,7 +6,6 @@
 #define GEMMI_MATH_HPP_
 
 #include <cmath>      // for fabs, cos, sqrt, round
-#include <cstdio>     // for snprintf
 #include <algorithm>  // for min
 #include <array>
 #include <stdexcept>  // for out_of_range
@@ -23,6 +22,9 @@ constexpr double hc() { return 12398.4197386209; }
 
 // The Bohr radius (a0) in Angstroms.
 constexpr double bohrradius() { return 0.529177210903; }
+
+// for Mott-Bethe factor
+constexpr double mott_bethe_const() { return 1. / (2 * pi() * pi() * bohrradius()); }
 
 // Used in conversion of ADPs (atomic displacement parameters).
 constexpr double u_to_b() { return 8 * pi() * pi(); }
@@ -83,21 +85,29 @@ struct Vec3 {
   double cos_angle(const Vec3& o) const {
     return dot(o) / std::sqrt(length_sq() * o.length_sq());
   }
-  double angle(const Vec3& o) const { return std::acos(cos_angle(o)); }
+  double angle(const Vec3& o) const {
+    return std::acos(std::max(-1., std::min(1., cos_angle(o))));
+  }
   bool approx(const Vec3& o, double epsilon) const {
     return std::fabs(x - o.x) <= epsilon &&
            std::fabs(y - o.y) <= epsilon &&
            std::fabs(z - o.z) <= epsilon;
   }
-  std::string str() const {
-    using namespace std;
-    char buf[64] = {0};
-    snprintf(buf, 63, "[%g %g %g]", x, y, z);
-    return buf;
+  bool has_nan() const {
+    return std::isnan(x) || std::isnan(y) || std::isnan(z);
   }
 };
 
 inline Vec3 operator*(double d, const Vec3& v) { return v * d; }
+
+/// Rodrigues' rotation formula: rotate vector v about given axis of rotation
+/// (which must be a unit vector) by given angle (in radians).
+inline Vec3 rotate_about_axis(const Vec3& v, const Vec3& axis, double theta) {
+  double sin_theta = std::sin(theta);
+  double cos_theta = std::cos(theta);
+  return v * cos_theta + axis.cross(v) * sin_theta +
+         axis * (axis.dot(v) * (1 - cos_theta));
+}
 
 struct Mat33 {
   double a[3][3] = { {1.,0.,0.}, {0.,1.,0.}, {0.,0.,1.} };
@@ -112,6 +122,10 @@ struct Mat33 {
   Mat33(double a1, double a2, double a3, double b1, double b2, double b3,
         double c1, double c2, double c3)
   : a{{a1, a2, a3}, {b1, b2, b3}, {c1, c2, c3}} {}
+
+  static Mat33 from_columns(const Vec3& c1, const Vec3& c2, const Vec3& c3) {
+    return Mat33(c1.x, c2.x, c3.x, c1.y, c2.y, c3.y, c1.z, c2.z, c3.z);
+  }
 
   Vec3 row_copy(int i) const {
     if (i < 0 || i > 2)
@@ -173,6 +187,14 @@ struct Mat33 {
           return false;
     return true;
   }
+  bool has_nan() const {
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j)
+        if (std::isnan(a[i][j]))
+            return true;
+    return false;
+  }
+
   double determinant() const {
     return a[0][0] * (a[1][1]*a[2][2] - a[2][1]*a[1][2]) +
            a[0][1] * (a[1][2]*a[2][0] - a[2][2]*a[1][0]) +
@@ -292,7 +314,8 @@ template<typename T> struct SMat33 {
     return inv;
   }
 
-  // Based on https://en.wikipedia.org/wiki/Eigenvalue_algorithm
+  /// Based on https://en.wikipedia.org/wiki/Eigenvalue_algorithm
+  /// To calculate both eigenvalues and eigenvectors use eig3.hpp
   std::array<double, 3> calculate_eigenvalues() const {
     double p1 = u12*u12 + u13*u13 + u23*u23;
     if (p1 == 0)
@@ -310,27 +333,6 @@ template<typename T> struct SMat33 {
     double eig1 = q + 2 * p * std::cos(phi);
     double eig3 = q + 2 * p * std::cos(phi + 2./3.*pi());
     return {{eig1, 3 * q - eig1 - eig3, eig3}};
-  }
-
-  // Assumes one of the eigenvalue calculate above.
-  // May not work if eigenvalues are not distinct.
-  Vec3 calculate_eigenvector(double eigenvalue) const {
-    Vec3 r0(u11 - eigenvalue, u12, u13);
-    Vec3 r1(u12, u22 - eigenvalue, u23);
-    Vec3 r2(u13, u23, u33 - eigenvalue);
-    Vec3 cr[3] = {r0.cross(r1), r0.cross(r2), r1.cross(r2)};
-    int idx = 0;
-    double lensq = 0;
-    for (int i = 0; i < 3; ++i) {
-      double tmp = cr[i].length_sq();
-      if (tmp > lensq) {
-        idx = i;
-        lensq = tmp;
-      }
-    }
-    if (lensq == 0)
-      return Vec3(0, 0, 1); // an arbitrary choice for the special case
-    return cr[idx] / std::sqrt(lensq);
   }
 };
 
@@ -354,6 +356,10 @@ struct Transform {
   }
   void set_identity() { mat = Mat33(); vec = Vec3(); }
 
+  bool has_nan() const {
+    return mat.has_nan() || vec.has_nan();
+  }
+
   bool approx(const Transform& o, double epsilon) const {
     return mat.approx(o.mat, epsilon) && vec.approx(o.vec, epsilon);
   }
@@ -375,104 +381,6 @@ struct Box {
   void add_margins(const Pos& p) { minimum -= p; maximum += p; }
   void add_margin(double m) { add_margins(Pos(m, m, m)); }
 };
-
-// popular single-pass algorithm for calculating variance and mean
-struct Variance {
-  int n = 0;
-  double sum_sq = 0.;
-  double mean_x = 0.;
-
-  Variance() = default;
-  template <typename T> Variance(T begin, T end) : Variance() {
-    for (auto i = begin; i != end; ++i)
-      add_point(*i);
-  }
-  void add_point(double x) {
-    ++n;
-    double dx = x - mean_x;
-    mean_x += dx / n;
-    sum_sq += dx * (x - mean_x);
-  }
-  double for_sample() const { return sum_sq / (n - 1); }
-  double for_population() const { return sum_sq / n; }
-};
-
-struct Covariance : Variance {
-  double mean_y = 0.;
-  void add_point(double x, double y) {
-    ++n;
-    double dx = x - mean_x;
-    mean_x += dx / n;
-    mean_y += (y - mean_y) / n;
-    sum_sq += dx * (y - mean_y);
-  }
-};
-
-struct Correlation {
-  int n = 0;
-  double sum_xx = 0.;
-  double sum_yy = 0.;
-  double sum_xy = 0.;
-  double mean_x = 0.;
-  double mean_y = 0.;
-  void add_point(double x, double y) {
-    ++n;
-    double weight = (double)(n - 1) / n;
-    double dx = x - mean_x;
-    double dy = y - mean_y;
-    sum_xx += weight * dx * dx;
-    sum_yy += weight * dy * dy;
-    sum_xy += weight * dx * dy;
-    mean_x += dx / n;
-    mean_y += dy / n;
-  }
-  double coefficient() const { return sum_xy / std::sqrt(sum_xx * sum_yy); }
-  double x_variance() const { return sum_xx / n; }
-  double y_variance() const { return sum_yy / n; }
-  double covariance() const { return sum_xy / n; }
-  double mean_ratio() const { return mean_y / mean_x; }
-  // the regression line
-  double slope() const { return sum_xy / sum_xx; }
-  double intercept() const { return mean_y - slope() * mean_x; }
-};
-
-
-struct DataStats {
-  double dmin = NAN;
-  double dmax = NAN;
-  double dmean = NAN;
-  double rms = NAN;
-  size_t nan_count = 0;
-};
-
-template<typename T>
-DataStats calculate_data_statistics(const std::vector<T>& data) {
-  DataStats stats;
-  double sum = 0;
-  double sq_sum = 0;
-  stats.dmin = INFINITY;
-  stats.dmax = -INFINITY;
-  for (double d : data) {
-    if (std::isnan(d)) {
-      stats.nan_count++;
-      continue;
-    }
-    sum += d;
-    sq_sum += d * d;
-    if (d < stats.dmin)
-      stats.dmin = d;
-    if (d > stats.dmax)
-      stats.dmax = d;
-  }
-  if (stats.nan_count != data.size()) {
-    stats.dmean = sum / (data.size() - stats.nan_count);
-    stats.rms = std::sqrt(sq_sum / (data.size() - stats.nan_count) - stats.dmean * stats.dmean);
-  } else {
-    stats.dmin = NAN;
-    stats.dmax = NAN;
-  }
-  return stats;
-}
 
 // internally used functions
 namespace impl {

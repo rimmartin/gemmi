@@ -10,7 +10,7 @@ GEMMI can help if you work with:
 * crystallographic symmetries,
 * or if you just read and write CIF/STAR files (where C=Crystallographic).
 
-GEMMI is a header-only C++11 library accompanied by:
+GEMMI is a C++11 library accompanied by:
 
 * command-line [tools](https://gemmi.readthedocs.io/en/latest/utils.html),
 * Python bindings (supporting CPython and PyPy),
@@ -28,4 +28,4 @@ two major providers of software for macromolecular crystallography.
 Citing: [JOSS paper](https://doi.org/10.21105/joss.04200).
 
 License: MPLv2, or (at your option) LGPLv3.
-© 2017-2022 Global Phasing Ltd.
+© 2017-2023 Global Phasing Ltd.

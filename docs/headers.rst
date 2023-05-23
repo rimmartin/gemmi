@@ -35,6 +35,9 @@ gemmi/blob.hpp
     Finding maxima or "blobs" in a Grid (map).
     Similar to CCP4 PEAKMAX and COOT's "Unmodelled blobs".
 
+gemmi/bond_idx.hpp
+    BondIndex: for checking which atoms are bonded, calculating graph distance.
+
 gemmi/c4322.hpp
     Electron scattering factor coefficients from the International Tables.
 
@@ -90,7 +93,7 @@ gemmi/enumstr.hpp
     SoftwareItem::Classification) and mmCIF strings.
 
 gemmi/fail.hpp
-    fail() and unreachable()
+    fail(), unreachable() and __declspec/__attribute__ macros
 
 gemmi/fileutil.hpp
     File-related utilities.
@@ -168,6 +171,11 @@ gemmi/mmdb.hpp
 gemmi/mmread.hpp
     Read any supported coordinate file.
 
+gemmi/mmread_gz.hpp
+    Functions for reading possibly gzipped coordinate files.
+    Trivial wrappers that can make compilation faster
+    by having a separate implementation file src/mmread_gz.cpp.
+
 gemmi/model.hpp
     Data structures to keep macromolecular structure model.
 
@@ -198,11 +206,11 @@ gemmi/numb.hpp
 gemmi/pdb.hpp
     Read PDB file format and store it in Structure.
 
+gemmi/pdb_id.hpp
+    handling PDB ID and $PDB_DIR: is_pdb_code(), expand_pdb_code_to_path()
+
 gemmi/pirfasta.hpp
     Read sequence from PIR or FASTA format.
-
-gemmi/placeh.hpp
-    Place hydrogens according to bond lengths and angles from monomer library.
 
 gemmi/polyheur.hpp
     Heuristic methods for working with chains and polymers.
@@ -213,11 +221,8 @@ gemmi/qcp.hpp
 
 gemmi/read_cif.hpp
     Functions for reading possibly gzipped CIF files.
-    Trivial wrappers that can make compilation faster.
-
-gemmi/read_coor.hpp
-    Functions for reading possibly gzipped coordinate files.
-    Trivial wrappers that can make compilation faster.
+    Trivial wrappers that can make compilation faster
+    by having a separate implementation file src/read_cif.cpp.
 
 gemmi/read_map.hpp
     Functions for reading possibly gzipped CCP4 map files.
@@ -232,15 +237,15 @@ gemmi/reciproc.hpp
 gemmi/refln.hpp
     Reads reflection data from the mmCIF format.
 
-gemmi/reindex.hpp
-    Reindex merged or unmerged MTZ file.
-
 gemmi/remarks.hpp
     Function read_metadata_from_remarks() that interprets REMARK 3
     and REMARK 200/230/240 filling in Metadata.
 
 gemmi/resinfo.hpp
     List of common residues with basic data.
+
+gemmi/riding_h.hpp
+    Place hydrogens according to bond lengths and angles from monomer library.
 
 gemmi/scaling.hpp
     Anisotropic scaling of data (includes scaling of bulk solvent parameters)
@@ -272,7 +277,10 @@ gemmi/span.hpp
     MutableVectorSpan - span of std::vector with insert() and erase()
 
 gemmi/sprintf.hpp
-    to_str(float|double), gf_snprintf - wrappers around stb_sprintf.
+    interface to stb_sprintf: snprintf_z, to_str(float|double)
+
+gemmi/stats.hpp
+    Statistics utilities: classes Covariance, Correlation, DataStats
 
 gemmi/symmetry.hpp
     Crystallographic Symmetry. Space Groups. Coordinate Triplets.
@@ -312,4 +320,4 @@ gemmi/version.hpp
     Version number.
 
 gemmi/xds_ascii.hpp
-    Read XDS_ASCII.HKL. For now, only unmerged files are read.
+    Read unmerged XDS files: XDS_ASCII.HKL and INTEGRATE.HKL.

@@ -21,12 +21,19 @@ jobs:
     - name: Configure CMake
       shell: bash
       working-directory: ${{runner.workspace}}/build
-      run: cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=${{ matrix.build }}
+      run: |
+        cmake --version
+        cmake $GITHUB_WORKSPACE -DCMAKE_BUILD_TYPE=${{ matrix.build }}
 
     - name: Build
       working-directory: ${{runner.workspace}}/build
       shell: bash
       run: cmake --build . --config ${{ matrix.build }}
+
+    - name: Install
+      working-directory: ${{runner.workspace}}/build
+      shell: bash
+      run: sudo cmake --install . --config ${{ matrix.build }}
 
     - name: Test
       working-directory: ${{runner.workspace}}/build
@@ -35,6 +42,7 @@ jobs:
 
     - name: Python Setup
       run: |
+        python3 -m pip install wheel
         python3 -m pip wheel -v .
         python3 -m pip install gemmi-*.whl
 
@@ -84,19 +92,20 @@ jobs:
     - name: install pybind11
       run: |
         git clone --depth=1 https://github.com/pybind/pybind11.git
-        cd pybind11
-        cmake . -Wno-dev -DPYTHON_EXECUTABLE=/usr/bin/python3 -DPYBIND11_TEST=OFF
-        make
-        sudo make install
+        #cd pybind11
+        #cmake . -Wno-dev -DPYTHON_EXECUTABLE=/usr/bin/python3 -DPYBIND11_TEST=OFF
+        #make
+        #sudo make install
     - name: build and test
       run: |
         g++ --version
         cmake --version
         mkdir build
         cd build
-        cmake .. -DCMAKE_BUILD_TYPE=MinSizeRel -DUSE_FORTRAN=1 -DEXTRA_WARNINGS=1 -DUSE_PYTHON=1 -DPYTHON_EXECUTABLE=/usr/bin/python3
+        cmake .. -DCMAKE_BUILD_TYPE=MinSizeRel -DUSE_FORTRAN=1 -DEXTRA_WARNINGS=1 -DUSE_PYTHON=1 -DPython_EXECUTABLE=/usr/bin/python3 -DBUILD_SHARED_LIBS=ON -DCMAKE_CXX_VISIBILITY_PRESET=hidden
         make -j2
         make -j2 check
+        sudo make install
         python3 -m unittest discover -v -s ../tests/
         strip --strip-unneeded ./gemmi ./gemmi.cpython*.so
     - name: run doctest
@@ -125,8 +134,9 @@ jobs:
         cmake .. -DCMAKE_BUILD_TYPE=Debug
         cmake --build . --config Debug
         cmake --build . --config Debug --target check
+        sudo cmake --install . --config Debug
         cd ..
-        python3 setup.py install --user --prefix=
+        python3 -m pip install . --user
         python3 -m unittest discover -v -s tests/
     - name: run doctest
       run: |
@@ -160,6 +170,7 @@ jobs:
         cmake -DCMAKE_CXX_STANDARD=11 -DEXTRA_WARNINGS=1 .
         make -j2 all
         make -j2 check
+        sudo make install
         python3 setup.py sdist
         python3 -m pip install -v dist/gemmi-*.tar.gz
         python3 -m unittest discover -v -s tests/
@@ -190,9 +201,10 @@ jobs:
     - name: build and test
       run: |
         pwd
-        cmake3 . -DUSE_PYTHON=1 -DPYTHON_EXECUTABLE=/usr/bin/python3
+        cmake3 . -DUSE_PYTHON=1 -DPython_EXECUTABLE=/usr/bin/python3
         make -j2
         make -j2 check
+        make install
         python3 -m unittest discover -v -s ./tests/
         strip --strip-unneeded ./gemmi ./gemmi.cpython*.so
     - name: run doctest

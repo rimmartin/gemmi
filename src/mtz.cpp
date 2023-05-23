@@ -1,466 +1,290 @@
-// Copyright 2019 Global Phasing Ltd.
-//
-// MTZ info
+// Copyright 2019-2023 Global Phasing Ltd.
 
-#include <cstdio>
-#include <unordered_map>
 #include <gemmi/mtz.hpp>
-#include <gemmi/asudata.hpp>  // for AsuData
-#include <gemmi/fileutil.hpp> // for file_open
-#include <gemmi/gz.hpp>       // for MaybeGzipped
-#include <gemmi/input.hpp>    // for FileStream, MemoryStream
-#include <gemmi/reciproc.hpp> // for count_reflections
-#include "histogram.h"        // for print_histogram
-#define GEMMI_PROG mtz
-#include "options.h"
+#include <gemmi/sprintf.hpp>
 
-using gemmi::Mtz;
-using std::printf;
+namespace gemmi {
 
-namespace {
-
-struct MtzArg: public Arg {
-  static option::ArgStatus AsuChoice(const option::Option& option, bool msg) {
-    return Arg::Choice(option, msg, {"ccp4", "tnt"});
-  }
-};
-
-enum OptionIndex {
-  Headers=4, Dump, PrintBatch, PrintBatches, PrintAppendix,
-  PrintTsv, PrintStats, PrintHistogram, PrintCells, CheckAsu,
-  Compare, ToggleEndian, NoIsym, UpdateReso
-};
-
-const option::Descriptor Usage[] = {
-  { NoOp, 0, "", "", Arg::None,
-    "Usage:\n " EXE_NAME " [options] MTZ_FILE[...]"
-    "\nPrint informations from an mtz file."},
-  CommonUsage[Help],
-  CommonUsage[Version],
-  CommonUsage[Verbose],
-  { Headers, 0, "H", "headers", Arg::None,
-    "  -H, --headers  \tPrint raw headers, until the END record." },
-  { Dump, 0, "d", "dump", Arg::None,
-    "  -d, --dump  \tPrint a subset of CCP4 mtzdmp informations." },
-  { PrintBatch, 0, "B", "batch", Arg::Int,
-    "  -B N, --batch=N  \tPrint data from batch header N." },
-  { PrintBatches, 0, "b", "batches", Arg::None,
-    "  -b, --batches  \tPrint data from all batch headers." },
-  { PrintAppendix, 0, "A", "appendix", Arg::None,
-    "  -A, --appendix  \tPrint appended text." },
-  { PrintTsv, 0, "", "tsv", Arg::None,
-    "  --tsv  \tPrint all the data as tab-separated values." },
-  { PrintStats, 0, "s", "stats", Arg::None,
-    "  -s, --stats  \tPrint column statistics (completeness, mean, etc)." },
-  { PrintHistogram, 0, "", "histogram", Arg::Required,
-    "  --histogram=LABEL  \tPrint histogram of values in column LABEL." },
-  { PrintCells, 0, "", "cells", Arg::None,
-    "  --cells  \tPrint cell parameters only." },
-  { CheckAsu, 0, "", "check-asu", MtzArg::AsuChoice,
-    "  --check-asu=ccp4|tnt  \tCheck if reflections are in ASU." },
-  { Compare, 0, "", "compare", Arg::Required,
-    "  --compare=FILE  \tCompare two MTZ files." },
-  { ToggleEndian, 0, "", "toggle-endian", Arg::None,
-    "  --toggle-endian  \tToggle assumed endiannes (little <-> big)." },
-  { NoIsym, 0, "", "no-isym", Arg::None,
-    "  --no-isym  \tDo not apply symmetry from M/ISYM column." },
-  { UpdateReso, 0, "", "update-reso", Arg::None,
-    "  --update-reso  \tRecalculate resolution limits before printing." },
-  { 0, 0, 0, 0, 0, 0 }
-};
-
-void print_cell_parameters(const char* prefix, const gemmi::UnitCell& cell) {
-  printf("%s %g %7g %7g  %6g %6g %6g\n", prefix,
-         cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
-}
-
-void dump(const Mtz& mtz) {
-  printf("Title: %s\n", mtz.title.c_str());
-  printf("Total Number of Datasets = %zu\n\n", mtz.datasets.size());
-  for (const Mtz::Dataset& ds : mtz.datasets) {
-    printf("Dataset %4d   %s > %s > %s:\n",
-           ds.id, ds.project_name.c_str(),
-           ds.crystal_name.c_str(), ds.dataset_name.c_str());
-    print_cell_parameters("        cell ", ds.cell);
-    printf("  wavelength  %g\n", ds.wavelength);
-  }
-  printf("\nNumber of Columns = %zu\n", mtz.columns.size());
-  printf("Number of Reflections = %d\n", mtz.nreflections);
-  printf("Number of Batches = %zu\n", mtz.batches.size());
-  printf("Missing values marked as: %g\n", mtz.valm);
-  print_cell_parameters("Global Cell (obsolete): ", mtz.cell);
-  printf("Resolution: %.2f - %.2f A\n",
-         mtz.resolution_high(), mtz.resolution_low());
-  printf("Sort Order: %d %d %d %d %d\n",
-         mtz.sort_order[0], mtz.sort_order[1], mtz.sort_order[2],
-         mtz.sort_order[3], mtz.sort_order[4]);
-  printf("Space Group: %s\n", mtz.spacegroup_name.c_str());
-  printf("Space Group Number: %d\n\n", mtz.spacegroup_number);
-  printf("Header info (run with option -s for recalculated statistics):\n");
-  printf("Column    Type  Dataset    Min        Max\n");
-  for (const Mtz::Column& col : mtz.columns)
-    printf("%-12s %c %2d %12.6g %10.6g\n",
-           col.label.c_str(), col.type, col.dataset_id,
-           col.min_value, col.max_value);
-  if (mtz.history.empty()) {
-    printf("\nNo history in the file.\n");
-  } else {
-    printf("\nHistory (%zu lines):\n", mtz.history.size());
-    for (const std::string& hline : mtz.history)
-      printf("%s\n", hline.c_str());
-  }
-  if (!mtz.batches.empty()) {
-    int prev_ds_id = -INT_MAX;
-    int bspan[2] = {-INT_MAX, -INT_MAX};
-    printf("\nBatch numbers:");
-    for (size_t i = 0; i < mtz.batches.size(); ++i) {
-      const Mtz::Batch& batch = mtz.batches[i];
-      int ds_id = batch.dataset_id();
-      if (ds_id != prev_ds_id || batch.number != bspan[1] + 1) {
-        if (i != 0)
-          printf(" %d-%d", bspan[0], bspan[1]);
-        bspan[0] = batch.number;
-        if (ds_id != prev_ds_id) {
-          printf("\n dataset %d:", ds_id);
-          prev_ds_id = ds_id;
-        }
-      }
-      bspan[1] = batch.number;
-    }
-    printf(" %d-%d\n", bspan[0], bspan[1]);
-  }
-  if (!mtz.appended_text.empty())
-    printf("\nAppendix: %zu bytes.\n", mtz.appended_text.size());
-}
-
-void print_batch(const Mtz::Batch& b) {
-  printf("Batch %d - %s\n", b.number, b.title.c_str());
-  printf("    %zu %s: %s\n", b.axes.size(),
-         b.axes.size() == 1 ? "axis" : "axes",
-         gemmi::join_str(b.axes, ", ").c_str());
-  printf("  %4zu integers:", b.ints.size());
-  for (size_t i = 0; i != b.ints.size(); ++i) {
-    if (i != 0 && i % 10 == 0)
-      printf("\n                ");
-    printf(" %5d", b.ints[i]);
-  }
-  printf("\n  %4zu floats:", b.floats.size());
-  size_t last_non_zero = b.floats.size();
-  while (last_non_zero != 0 && b.floats[last_non_zero - 1] == 0.f)
-    --last_non_zero;
-  for (size_t i = 0; i != b.floats.size(); ++i) {
-    if (i != 0 && i % 5 == 0) {
-      printf("\n       %4zu|  ", i);
-      if (i >= last_non_zero) {
-        printf("          ...");
-        break;
-      }
-    }
-    printf(" %12.5g", b.floats[i]);
-  }
-  printf("\n    dataset: %d\n", b.dataset_id());
-}
-
-void print_batch_extra_info(const Mtz::Batch& b) {
-  gemmi::UnitCell uc = b.get_cell();
-  print_cell_parameters("    Unit cell parameters:", uc);
-  printf("    Phi start - end: %g - %g\n", b.phi_start(), b.phi_end());
-  gemmi::Mat33 u = b.matrix_U();
-  for (int i = 0; i != 3; ++i)
-    printf("    %s % 10.6f % 10.6f % 10.6f\n",
-           i == 0 ? "Orientation matrix U:" : "                     ",
-           u.a[i][0], u.a[i][1], u.a[i][2]);
-}
-
-void print_cells(const Mtz& mtz) {
-  print_cell_parameters("global cell param.:", mtz.cell);
-  for (const Mtz::Dataset& ds : mtz.datasets) {
-    printf("dataset %d %-8s:", ds.id, ds.dataset_name.c_str());
-    print_cell_parameters("", ds.cell);
-  }
-}
-
-void print_tsv(const Mtz& mtz) {
-  size_t ncol = mtz.columns.size();
-  for (size_t i = 0; i < ncol; ++i)
-    printf("%s%c", mtz.columns[i].label.c_str(), i + 1 != ncol ? '\t' : '\n');
-  for (size_t i = 0; i < mtz.nreflections * ncol; ++i)
-    printf("%g%c", mtz.data[i], (i + 1) % ncol != 0 ? '\t' : '\n');
-}
-
-void print_stats(const Mtz& mtz) {
-  struct ColumnStats {
-    float min_value = INFINITY;
-    float max_value = -INFINITY;
-    gemmi::Variance var;
-  };
-  std::vector<ColumnStats> column_stats(mtz.columns.size());
-  for (size_t i = 0; i != mtz.data.size(); ++i) {
-    float v = mtz.data[i];
-    if (!std::isnan(v)) {
-      ColumnStats& stat = column_stats[i % column_stats.size()];
-      if (v < stat.min_value)
-        stat.min_value = v;
-      if (v > stat.max_value)
-        stat.max_value = v;
-      stat.var.add_point(v);
-    }
-  }
-  printf("column type @dataset  completeness        min       max"
-         "       mean   stddev\n");
-  for (size_t i = 0; i != column_stats.size(); ++i) {
-    const Mtz::Column& col = mtz.columns[i];
-    const ColumnStats& stat = column_stats[i];
-    printf("%-14s %c @%d  %d (%6.2f%%) %9.5g %9.5g  %9.5g %8.4g\n",
-           col.label.c_str(), col.type, col.dataset_id,
-           stat.var.n, 100.0 * stat.var.n / mtz.nreflections,
-           stat.min_value, stat.max_value,
-           stat.var.mean_x, std::sqrt(stat.var.for_population()));
-  }
-
-  if (!mtz.batches.empty()) {
-    const Mtz::Column* col = mtz.column_with_label("BATCH");
-    if (!col) {
-      printf("Missing column BATCH\n");
-      return;
-    }
-    std::unordered_map<int,int> batch_stat;
-    for (float b : *col)
-      batch_stat[(int)b]++;
-    int min_loc = 0;
-    int min_val = INT_MAX;
-    int max_loc = 0;
-    int max_val = -INT_MAX;
-    for (auto b : batch_stat) {
-      if (b.second < min_val) {
-        min_loc = b.first;
-        min_val = b.second;
-      }
-      if (b.second > max_val) {
-        max_loc = b.first;
-        max_val = b.second;
-      }
-    }
-    printf("\n%zu MTZ batches, including %d empty. Non-empty batches have\n",
-           mtz.batches.size(), (int)mtz.batches.size() - (int)batch_stat.size());
-    printf("from %d (in BATCH %d) to %d (in BATCH %d) reflections.\n",
-           min_val, min_loc, max_val, max_loc);
-  }
-}
-
-void print_column_statistics(const Mtz& mtz, const char* label) {
-  const Mtz::Column& col = mtz.get_column_with_label(label);
-  std::vector<float> data(col.size());
-  for (size_t i = 0; i != data.size(); ++i)
-    data[i] = col[i];
-  gemmi::DataStats st = gemmi::calculate_data_statistics(data);
-  std::printf("\nStatistics of column %s:\n", label);
-  std::printf("NaN count:  %zu of %zu\n", st.nan_count, data.size());
-  if (st.nan_count == data.size())
+void Mtz::ensure_asu(bool tnt_asu) {
+  if (!is_merged())
+    fail("Mtz::ensure_asu() is for merged MTZ only");
+  if (!spacegroup)
     return;
-  std::printf("Minimum: %12.5f\n", st.dmin);
-  std::printf("Maximum: %12.5f\n", st.dmax);
-  std::printf("Mean:    %12.5f\n", st.dmean);
-  std::printf("RMS:     %12.5f\n", st.rms);
-  if (st.nan_count != 0)
-    gemmi::vector_remove_if(data, [](float x) { return std::isnan(x); });
-  size_t mpos = data.size() / 2;
-  std::nth_element(data.begin(), data.begin() + mpos, data.end());
-  std::printf("Median:  %12.5f\n", data[mpos]);
-  double margin = 0;
-  print_histogram(data, st.dmin - margin, st.dmax + margin);
-}
-
-void check_asu(const Mtz& mtz, bool tnt) {
-  size_t ncol = mtz.columns.size();
-  const gemmi::SpaceGroup* sg = mtz.spacegroup;
-  if (!sg)
-    gemmi::fail("no spacegroup in the MTZ file.");
-  int counter = 0;
-  gemmi::ReciprocalAsu asu(sg, tnt);
-  for (int i = 0; i < mtz.nreflections; ++i) {
-    int h = (int) mtz.data[i * ncol + 0];
-    int k = (int) mtz.data[i * ncol + 1];
-    int l = (int) mtz.data[i * ncol + 2];
-    if (asu.is_in({{h, k, l}}))
-      ++counter;
-  }
-  printf("spacegroup: %s\n", sg->xhm().c_str());
-  printf("%s ASU convention wrt. standard setting: %s\n",
-         tnt ? "TNT" : "CCP4", asu.condition_str());
-  printf("inside / outside of ASU: %d / %d\n",
-         counter, mtz.nreflections - counter);
-  double dmin = mtz.resolution_high() - 1e-6;
-  printf("All unique reflections up to d=%g: %d\n",
-         dmin, gemmi::count_reflections(mtz.cell, mtz.spacegroup, dmin));
-}
-
-void compare_mtz(Mtz& mtz1, const char* path2, bool verbose) {
-  Mtz mtz2;
-  mtz2.read_input(gemmi::MaybeGzipped(path2), true);
-  if (mtz1.spacegroup != mtz2.spacegroup)
-    printf("Spacegroup differs:  %s  and  %s\n",
-           mtz1.spacegroup_name.c_str(), mtz2.spacegroup_name.c_str());
-  else if (verbose)
-    printf("Spacegroup the same.\n");
-  if (mtz1.cell != mtz2.cell)
-    printf("Unit cell differs:\n    %g %g %g  %g %g %g\n    %g %g %g  %g %g %g\n",
-           mtz1.cell.a, mtz1.cell.b, mtz1.cell.c,
-           mtz1.cell.alpha, mtz1.cell.beta, mtz1.cell.gamma,
-           mtz2.cell.a, mtz2.cell.b, mtz2.cell.c,
-           mtz2.cell.alpha, mtz2.cell.beta, mtz2.cell.gamma);
-  else if (verbose)
-    printf("Unit cell the same.\n");
-  mtz1.sort();
-  mtz2.sort();
-  // Check if indices are the same. "H" is a dummy value for AsuData.
-  {
-    gemmi::AsuData<int> ad1 = gemmi::make_asu_data<int>(mtz1, "H", true);
-    gemmi::AsuData<int> ad2 = gemmi::make_asu_data<int>(mtz2, "H", true);
-    int n = gemmi::count_equal_values(ad1.v, ad2.v);
-    if (n != mtz1.nreflections || n != mtz2.nreflections)
-      printf("Miller indices differ: %d common (all: %d and %d).\n",
-              n, mtz1.nreflections, mtz2.nreflections);
-    else
-      printf("All Miller indices are the same. Count: %d\n", n);
-  }
-  for (auto col = mtz1.columns.begin() + 3; col < mtz1.columns.end(); ++col) {
-    const Mtz::Column* col2 = mtz2.column_with_label(col->label);
-    if (!col2) {
-      printf("Missing column: %s\n", col->label.c_str());
+  GroupOps gops = spacegroup->operations();
+  ReciprocalAsu asu(spacegroup, tnt_asu);
+  std::vector<int> phase_columns = positions_of_columns_with_type('P');
+  std::vector<int> abcd_columns = positions_of_columns_with_type('A');
+  std::vector<int> dano_columns = positions_of_columns_with_type('D');
+  std::vector<std::pair<int,int>> plus_minus_columns = positions_of_plus_minus_columns();
+  bool no_special_columns = phase_columns.empty() && abcd_columns.empty() &&
+                            plus_minus_columns.empty() && dano_columns.empty();
+  bool centric = no_special_columns || gops.is_centrosymmetric();
+  for (size_t n = 0; n < data.size(); n += columns.size()) {
+    Miller hkl = get_hkl(n);
+    if (asu.is_in(hkl))
       continue;
-    }
-    if (col->type != col2->type) {
-      printf("Type of column %s differs: %c and %c\n",
-             col->label.c_str(), col->type, col2->type);
+    auto result = asu.to_asu(hkl, gops);
+    // cf. impl::move_to_asu() in asudata.hpp
+    set_hkl(n, result.first);
+    if (no_special_columns)
       continue;
-    }
-    if (col->type == 'F' && col+1 != mtz1.columns.end() && (col+1)->type == 'P') {
-      std::array<std::string,2> labels{{col->label, (col+1)->label}};
-      auto ad1 = gemmi::make_asu_data<std::complex<float>,2>(mtz1, labels, true);
-      auto ad2 = gemmi::make_asu_data<std::complex<float>,2>(mtz2, labels, true);
-      gemmi::ComplexCorrelation cor = gemmi::calculate_hkl_complex_correlation(ad1.v, ad2.v);
-      std::complex<double> cc = cor.coefficient();
-      printf("Column %s/%s: |CC|=%.8g  phase(CC)=%g deg  ratio=%g  n=%d\n",
-             col->label.c_str(), (col+1)->label.c_str(),
-             std::abs(cc), gemmi::deg(std::arg(cc)), cor.mean_ratio(), cor.n);
-      ++col;
-    } else if (col->type == 'I' || col->type == 'B' || col->type == 'Y') {
-      auto ad1 = gemmi::make_asu_data<float>(mtz1, col->label, true);
-      auto ad2 = gemmi::make_asu_data<float>(mtz2, col->label, true);
-      int nid = gemmi::count_equal_values(ad1.v, ad2.v);
-      printf("Column %s: identical: %d  (all: %zu and %zu)\n",
-             col->label.c_str(), nid, ad1.size(), ad2.size());
-    } else { // J, D, Q, G, L, K, M, E, P, A, Y
-      auto ad1 = gemmi::make_asu_data<float>(mtz1, col->label, true);
-      auto ad2 = gemmi::make_asu_data<float>(mtz2, col->label, true);
-      int nid = gemmi::count_equal_values(ad1.v, ad2.v);
-      printf("Column %s: identical: %d ", col->label.c_str(), nid);
-      if ((size_t)nid == ad1.size() && ad1.size() == ad2.size()) {
-        printf("(all)\n");
-      } else {
-        gemmi::Correlation cor = gemmi::calculate_hkl_value_correlation(ad1.v, ad2.v);
-        printf("CC=%.8g  ratio=%.8g  n=%d\n",
-               cor.coefficient(), cor.mean_ratio(), cor.n);
-      }
-    }
-  }
-}
-
-template<typename Stream>
-void print_mtz_info(Stream&& stream, const char* path,
-                    const std::vector<option::Option>& options) {
-  Mtz mtz;
-  try {
-    mtz.read_first_bytes(stream);
-    if (options[ToggleEndian])
-      mtz.toggle_endiannes();
-  } catch (std::runtime_error& e) {
-    gemmi::fail(std::string(e.what()) + ": " + path);
-  }
-  if (options[Headers]) {
-    char buf[81] = {0};
-    mtz.seek_headers(stream);
-    while (stream.read(buf, 80)) {
-      printf("%s\n", gemmi::rtrim_str(buf).c_str());
-      if (gemmi::ialpha3_id(buf) == gemmi::ialpha3_id("END"))
-        break;
-    }
-  }
-  if (options[Verbose])
-    mtz.warnings = stderr;
-  mtz.read_main_headers(stream);
-  mtz.read_history_and_batch_headers(stream);
-  mtz.setup_spacegroup();
-  if (options[PrintTsv] || options[PrintStats] || options[PrintHistogram] ||
-      options[CheckAsu] || options[Compare] || options[UpdateReso])
-    mtz.read_raw_data(stream);
-  if (options[UpdateReso])
-    mtz.update_reso();
-  if (options[Dump] ||
-      !(options[PrintBatch] || options[PrintBatches] || options[PrintTsv] ||
-        options[PrintStats] || options[PrintHistogram] ||
-        options[PrintAppendix] || options[PrintCells] ||
-        options[CheckAsu] || options[Compare] || options[Headers]))
-    dump(mtz);
-  if (options[PrintBatch]) {
-    for (const option::Option* o = options[PrintBatch]; o; o = o->next()) {
-      int number = std::atoi(o->arg);
-      for (const Mtz::Batch& b : mtz.batches)
-        if (b.number == number) {
-          print_batch(b);
-          print_batch_extra_info(b);
+    int isym = result.second;
+    if (!phase_columns.empty() || !abcd_columns.empty()) {
+      const Op& op = gops.sym_ops[(isym - 1) / 2];
+      double shift = op.phase_shift(hkl);
+      if (shift != 0) {
+        if (isym % 2 == 0)
+          shift = -shift;
+        double shift_deg = deg(shift);
+        for (int col : phase_columns)
+          data[n + col] = float(data[n + col] + shift_deg);
+        for (auto i = abcd_columns.begin(); i+3 < abcd_columns.end(); i += 4) {
+          double sinx = std::sin(shift);
+          double cosx = std::cos(shift);
+          double sin2x = 2 * sinx * cosx;
+          double cos2x = sq(cosx)- sq(sinx);
+          double a = data[n + *(i+0)];
+          double b = data[n + *(i+1)];
+          double c = data[n + *(i+2)];
+          double d = data[n + *(i+3)];
+          // a sin(x+y) + b cos(x+y) = a sin(x) cos(y) - b sin(x) sin(y)
+          //                         + a cos(x) sin(y) + b cos(x) cos(y)
+          data[n + *(i+0)] = float(a * cosx - b * sinx);
+          data[n + *(i+1)] = float(a * sinx + b * cosx);
+          data[n + *(i+2)] = float(c * cos2x - d * sin2x);
+          data[n + *(i+3)] = float(c * sin2x + d * cos2x);
         }
-    }
-  }
-  if (options[PrintBatches])
-    for (const Mtz::Batch& b : mtz.batches)
-      print_batch(b);
-  if (options[PrintAppendix])
-    printf("%s", mtz.appended_text.c_str());
-  if (mtz.has_data() && !options[NoIsym])
-    mtz.switch_to_original_hkl();
-  if (options[PrintCells])
-    print_cells(mtz);
-  for (const option::Option* opt = options[PrintHistogram]; opt; opt = opt->next())
-    print_column_statistics(mtz, opt->arg);
-  if (options[PrintTsv])
-    print_tsv(mtz);
-  if (options[PrintStats])
-    print_stats(mtz);
-  if (options[CheckAsu])
-    check_asu(mtz, options[CheckAsu].arg[0] == 't');
-  if (options[Compare])
-    // here mtz gets sorted, so this option must be at the end
-    compare_mtz(mtz, options[Compare].arg, options[Verbose]);
-}
-
-} // anonymous namespace
-
-int GEMMI_MAIN(int argc, char **argv) {
-  OptParser p(EXE_NAME);
-  p.simple_parse(argc, argv, Usage);
-  p.require_input_files_as_args();
-  try {
-    for (int i = 0; i < p.nonOptionsCount(); ++i) {
-      const char* path = p.nonOption(i);
-      if (i != 0)
-        printf("\n\n");
-      if (p.options[Verbose])
-        std::fprintf(stderr, "Reading %s ...\n", path);
-      gemmi::MaybeGzipped input(path);
-      if (input.is_stdin()) {
-        print_mtz_info(gemmi::FileStream{stdin}, path, p.options);
-      } else if (gemmi::CharArray mem = input.uncompress_into_buffer()) {
-        print_mtz_info(mem.stream(), path, p.options);
-      } else {
-        gemmi::fileptr_t f = gemmi::file_open(input.path().c_str(), "rb");
-        print_mtz_info(gemmi::FileStream{f.get()}, path, p.options);
       }
     }
-  } catch (std::runtime_error& e) {
-    std::fprintf(stderr, "ERROR: %s\n", e.what());
-    return 1;
+    if (isym % 2 == 0 && !centric &&
+        // usually, centric reflections have empty F(-), so avoid swapping it
+        !gops.is_reflection_centric(hkl)) {
+      for (std::pair<int,int> cols : plus_minus_columns)
+        std::swap(data[n + cols.first], data[n + cols.second]);
+      for (int col : dano_columns)
+        data[n + col] = -data[n + col];
+    }
   }
-  return 0;
 }
+
+void Mtz::reindex(const Op& op, std::ostream* out) {
+  if (op.tran != Op::Tran{0, 0, 0})
+    gemmi::fail("reindexing operator must not have a translation");
+  if (op.det_rot() < 0)
+    gemmi::fail("reindexing operator must preserve the hand of the axes");
+  switch_to_original_hkl();  // changes hkl for unmerged data only
+  Op transposed_op{op.transposed_rot(), {0, 0, 0}};
+  Op real_space_op = transposed_op.inverse();
+  if (out)
+    *out << "Real space transformation: " << real_space_op.triplet() << '\n';
+  bool row_removal = false;
+  // change Miller indices
+  for (size_t n = 0; n < data.size(); n += columns.size()) {
+    Miller hkl_den = transposed_op.apply_to_hkl_without_division(get_hkl(n));
+    Miller hkl = Op::divide_hkl_by_DEN(hkl_den);
+    if (hkl[0] * Op::DEN == hkl_den[0] &&
+        hkl[1] * Op::DEN == hkl_den[1] &&
+        hkl[2] * Op::DEN == hkl_den[2]) {
+      set_hkl(n, hkl);
+    } else {  // fractional hkl - remove
+      row_removal = true;
+      data[n] = NAN;  // mark for removal
+    }
+  }
+
+  // remove reflections marked for removal
+  if (row_removal) {
+    int n_before = nreflections;
+    remove_rows_if([](float* h) { return std::isnan(*h); });
+    if (out)
+      *out << "Reflections removed (because of fractional indices): "
+           << (n_before - nreflections) << '\n';
+  }
+
+  switch_to_asu_hkl();  // revert switch_to_original_hkl() for unmerged data
+
+  // change space group
+  if (spacegroup) {
+    GroupOps gops = spacegroup->operations();
+    gops.change_basis_impl(real_space_op, transposed_op);
+    const SpaceGroup* new_sg = find_spacegroup_by_ops(gops);
+    if (!new_sg)
+      fail("reindexing: failed to determine new space group name");
+    if (new_sg != spacegroup) {
+      if (out)
+        *out << "Space group changed from " << spacegroup->xhm() << " to "
+             << new_sg->xhm() << ".\n";
+      spacegroup = new_sg;
+      spacegroup_number = spacegroup->ccp4;
+      spacegroup_name = spacegroup->hm;
+    } else {
+      if (out)
+        *out << "Space group stays the same:" << spacegroup->xhm() << ".\n";
+    }
+  }
+
+  // change unit cell parameters
+  cell = cell.changed_basis_backward(transposed_op, false);
+  for (Mtz::Dataset& ds : datasets)
+    ds.cell = ds.cell.changed_basis_backward(transposed_op, false);
+  for (Mtz::Batch& batch : batches)
+    batch.set_cell(batch.get_cell().changed_basis_backward(transposed_op, false));
+}
+
+
+#define WRITE(...) do { \
+    int len = snprintf_z(buf, 81, __VA_ARGS__); \
+    if (len < 80) \
+      std::memset(buf + len, ' ', 80 - len); \
+    if (write(buf, 80, 1) != 1) \
+      sys_fail("Writing MTZ file failed"); \
+  } while(0)
+
+template<typename Write>
+void Mtz::write_to_stream(Write write) const {
+  // uses: data, spacegroup, nreflections, batches, cell, sort_order,
+  //       valm, columns, datasets, history
+  if (!has_data())
+    fail("Cannot write Mtz which has no data");
+  if (!spacegroup)
+    fail("Cannot write Mtz which has no space group");
+  char buf[81] = {'M', 'T', 'Z', ' ', '\0'};
+  std::int64_t real_header_start = (int64_t) columns.size() * nreflections + 21;
+  std::int32_t header_start = (int32_t) real_header_start;
+  if (real_header_start > std::numeric_limits<int32_t>::max()) {
+    header_start = -1;
+  } else {
+    real_header_start = 0;
+  }
+  std::memcpy(buf + 4, &header_start, 4);
+  std::int32_t machst = is_little_endian() ? 0x00004144 : 0x11110000;
+  std::memcpy(buf + 8, &machst, 4);
+  std::memcpy(buf + 12, &real_header_start, 8);
+  if (write(buf, 80, 1) != 1 ||
+      write(data.data(), 4, data.size()) != data.size())
+    fail("Writing MTZ file failed");
+  WRITE("VERS MTZ:V1.1");
+  WRITE("TITLE %s", title.c_str());
+  WRITE("NCOL %8zu %12d %8zu", columns.size(), nreflections, batches.size());
+  if (cell.is_crystal())
+    WRITE("CELL  %9.4f %9.4f %9.4f %9.4f %9.4f %9.4f",
+          cell.a, cell.b, cell.c, cell.alpha, cell.beta, cell.gamma);
+  WRITE("SORT  %3d %3d %3d %3d %3d", sort_order[0], sort_order[1],
+        sort_order[2], sort_order[3], sort_order[4]);
+  GroupOps ops = spacegroup->operations();
+  char lat_type = spacegroup->ccp4_lattice_type();
+  WRITE("SYMINF %3d %2d %c %5d %*s'%c%s' PG%s",
+        ops.order(),               // number of symmetry operations
+        (int) ops.sym_ops.size(),  // number of primitive operations
+        lat_type,                  // lattice type
+        spacegroup->ccp4,          // space group number
+        20 - (int) std::strlen(spacegroup->hm), "",
+        lat_type,                  // space group name (first letter)
+        spacegroup->hm + 1,        // space group name (the rest)
+        spacegroup->point_group_hm()); // point group name
+  // If we have symops that are the same as spacegroup->operations(),
+  // write symops to preserve the order of SYMM records.
+  if (!symops.empty() && ops.is_same_as(split_centering_vectors(symops)))
+    for (Op op : symops)
+      WRITE("SYMM %s", to_upper(op.triplet()).c_str());
+  else
+    for (Op op : ops)
+      WRITE("SYMM %s", to_upper(op.triplet()).c_str());
+  auto reso = calculate_min_max_1_d2();
+  WRITE("RESO %-20.12f %-20.12f", reso[0], reso[1]);
+  if (std::isnan(valm))
+    WRITE("VALM NAN");
+  else
+    WRITE("VALM %f", valm);
+  auto format17 = [](float f) {
+    char buffer[18];
+    int len = snprintf_z(buffer, 18, "%.9f", f);
+    return std::string(buffer, len > 0 ? std::min(len, 17) : 0);
+  };
+  for (const Column& col : columns) {
+    auto minmax = calculate_min_max_disregarding_nans(col.begin(), col.end());
+    const char* label = !col.label.empty() ? col.label.c_str() : "_";
+    WRITE("COLUMN %-30s %c %17s %17s %4d",
+          label, col.type,
+          format17(minmax[0]).c_str(), format17(minmax[1]).c_str(),
+          col.dataset_id);
+    if (!col.source.empty())
+      WRITE("COLSRC %-30s %-36s  %4d", label, col.source.c_str(), col.dataset_id);
+  }
+  WRITE("NDIF %8zu", datasets.size());
+  for (const Dataset& ds : datasets) {
+    WRITE("PROJECT %7d %s", ds.id, ds.project_name.c_str());
+    WRITE("CRYSTAL %7d %s", ds.id, ds.crystal_name.c_str());
+    WRITE("DATASET %7d %s", ds.id, ds.dataset_name.c_str());
+    const UnitCell& uc = (ds.cell.is_crystal() && ds.cell.a > 0 ? ds.cell : cell);
+    WRITE("DCELL %9d %10.4f%10.4f%10.4f%10.4f%10.4f%10.4f",
+          ds.id, uc.a, uc.b, uc.c, uc.alpha, uc.beta, uc.gamma);
+    WRITE("DWAVEL %8d %10.5f", ds.id, ds.wavelength);
+    for (size_t i = 0; i < batches.size(); i += 12) {
+      std::memcpy(buf, "BATCH ", 6);
+      int pos = 6;
+      for (size_t j = i; j < std::min(batches.size(), i + 12); ++j, pos += 6)
+        snprintf_z(buf + pos, 7, "%6zu", j + 1);
+      std::memset(buf + pos, ' ', 80 - pos);
+      if (write(buf, 80, 1) != 1)
+        fail("Writing MTZ file failed");
+    }
+  }
+  WRITE("END");
+  if (!history.empty()) {
+    // According to mtzformat.html the file can have only up to 30 history
+    // lines, but we don't enforce it here.
+    WRITE("MTZHIST %3zu", history.size());
+    for (const std::string& line : history)
+      WRITE("%s", line.c_str());
+  }
+  if (!batches.empty()) {
+    WRITE("MTZBATS");
+    for (const Batch& batch : batches) {
+      // keep the numbers the same as in files written by libccp4
+      WRITE("BH %8d %7zu %7zu %7zu",
+            batch.number, batch.ints.size() + batch.floats.size(),
+            batch.ints.size(), batch.floats.size());
+      WRITE("TITLE %.70s", batch.title.c_str());
+      if (batch.ints.size() != 29 || batch.floats.size() != 156)
+        fail("wrong size of binaries batch headers");
+      write(batch.ints.data(), 4, batch.ints.size());
+      write(batch.floats.data(), 4, batch.floats.size());
+      WRITE("BHCH  %7.7s %7.7s %7.7s",
+            batch.axes.size() > 0 ? batch.axes[0].c_str() : "",
+            batch.axes.size() > 1 ? batch.axes[1].c_str() : "",
+            batch.axes.size() > 2 ? batch.axes[2].c_str() : "");
+    }
+  }
+  WRITE("MTZENDOFHEADERS");
+  if (!appended_text.empty()) {
+    if (write(appended_text.data(), appended_text.size(), 1) != 1)
+      fail("Writing MTZ file failed");
+  }
+}
+
+#undef WRITE
+
+void Mtz::write_to_cstream(std::FILE* stream) const {
+  write_to_stream([&](const void *ptr, size_t size, size_t nmemb) {
+      return std::fwrite(ptr, size, nmemb, stream);
+  });
+}
+
+void Mtz::write_to_string(std::string& str) const {
+  write_to_stream([&](const void *ptr, size_t size, size_t nmemb) {
+      str.append(static_cast<const char*>(ptr), size * nmemb);
+      return nmemb;
+  });
+}
+
+void Mtz::write_to_file(const std::string& path) const {
+  fileptr_t f = file_open(path.c_str(), "wb");
+  try {
+    return write_to_cstream(f.get());
+  } catch (std::runtime_error& e) {
+    fail(std::string(e.what()) + ": " + path);
+  }
+}
+
+} // namespace gemmi

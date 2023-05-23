@@ -3,6 +3,8 @@
 
 #include <algorithm>
 #include <gemmi/cif.hpp>
+#include <gemmi/merge.hpp>    // for parse_voigt_notation, ...
+#include <gemmi/mtz2cif.hpp>  // write_staraniso_b_in_mmcif
 
 namespace cif = gemmi::cif;
 
@@ -89,23 +91,19 @@ TEST_CASE("cif::Block::init_loop") {
 }
 
 
-#define GEMMI_WRITE_IMPLEMENTATION
-#include <gemmi/merge.hpp>
-#include <gemmi/mtz2cif.hpp>
-
 TEST_CASE("aniso_b_tensor_eigen") {
   std::string line = "(0.486, 17.6, 0.981, 3.004, -0.689, -1.99)";
   std::array<double,6> bval{0.486, 17.6, 0.981, 3.004, -0.689, -1.99};
-  gemmi::SMat33<double> b1, b2;
+  gemmi::SMat33<double> b1;
   bool ok = gemmi::parse_voigt_notation(line.c_str(), line.c_str() + line.size(), b1);
   CHECK(ok);
   CHECK_EQ(b1.elements_voigt(), bval);
   std::ostringstream os;
   os << "data_a\n";
   char buf[256];
-  gemmi::MtzToCif mtz2cif;
-  mtz2cif.write_staraniso_b_in_mmcif(b1, buf, os);
+  gemmi::write_staraniso_b_in_mmcif(b1, "xxxx", buf, os);
   cif::Document doc = cif::read_string(os.str());
+  gemmi::SMat33<double> b2{0, 0, 0, 0, 0, 0};
   ok = gemmi::read_staraniso_b_from_mmcif(doc.blocks[0], b2);
   CHECK(ok);
   auto b2_elem = b2.elements_voigt();

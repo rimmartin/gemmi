@@ -23,13 +23,14 @@ struct ReflnBlock {
   UnitCell cell;
   const SpaceGroup* spacegroup = nullptr;
   double wavelength;
+  int wavelength_count;
   cif::Loop* refln_loop = nullptr;
   cif::Loop* diffrn_refln_loop = nullptr;
   cif::Loop* default_loop = nullptr;
 
   ReflnBlock() = default;
   ReflnBlock(ReflnBlock&& rblock_) = default;
-  ReflnBlock(cif::Block&& block_) : block(block_) {
+  ReflnBlock(cif::Block&& block_) : block(std::move(block_)) {
     entry_id = cif::as_string(block.find_value("_entry.id"));
     impl::set_cell_from_mmcif(block, cell);
     if (const std::string* hm = impl::find_spacegroup_hm_value(block))
@@ -38,7 +39,8 @@ struct ReflnBlock {
     cell.set_cell_images_from_spacegroup(spacegroup);
     const char* wave_tag = "_diffrn_radiation_wavelength.wavelength";
     cif::Column wave_col = block.find_values(wave_tag);
-    wavelength = wave_col.length() == 1 ? cif::as_number(wave_col[0]) : 0.;
+    wavelength_count = wave_col.length();
+    wavelength = wavelength_count == 1 ? cif::as_number(wave_col[0]) : 0.;
     refln_loop = block.find_loop("_refln.index_h").get_loop();
     diffrn_refln_loop = block.find_loop("_diffrn_refln.index_h").get_loop();
     default_loop = refln_loop ? refln_loop : diffrn_refln_loop;
@@ -50,6 +52,7 @@ struct ReflnBlock {
     cell = o.cell;
     spacegroup = o.spacegroup;
     wavelength = o.wavelength;
+    wavelength_count = o.wavelength_count;
     if (o.refln_loop)
       refln_loop = block.find_loop("_refln.index_h").get_loop();
     if (o.diffrn_refln_loop)

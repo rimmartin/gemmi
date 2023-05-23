@@ -21,6 +21,18 @@ class TestDoc(unittest.TestCase):
         self.assertEqual([b.name for b in doc[1:-1]], ['b'])
         self.assertEqual([b.name for b in doc[1:1]], [])
 
+    def test_contains(self):
+        doc = cif.read_string("""
+            data_a
+            _one 1 _two 2 _three 3
+            data_b
+            _four 4
+            data_c
+            _two 2 _four 4 _six 6
+        """)
+        self.assertEqual('a' in doc, True)
+        self.assertEqual('d' in doc, False)
+
 class TestBlock(unittest.TestCase):
     def test_find(self):
         block = cif.read_string("""
@@ -307,7 +319,7 @@ class TestBlock(unittest.TestCase):
             mic1/img000001.spi mic1 10000 10500
             mic1/img000002.spi mic1 10000 10501
             """).sole_block()
-        self.assertEqual(block.name, '#')
+        self.assertEqual(block.name, ' ')
         item = block[0]
         self.assertEqual(item.line_number, 2)
         table = block.item_as_table(item)

@@ -25,7 +25,6 @@ struct SoftwareItem {
   std::string version;
   std::string date;
   Classification classification = Unspecified;
-  int pdbx_ordinal = -1;
 };
 
 // Information from REMARK 200/230 is significantly expanded in PDBx/mmCIF.
@@ -266,6 +265,23 @@ struct Connection {
   double reported_distance = 0.0;
 };
 
+// Corresponds to CISPEP or _struct_mon_prot_cis
+struct CisPep {
+  AtomAddress partner_c, partner_n;
+  std::string model_str;
+  // mmCIF has (unused by the PDB) tag _struct_mon_prot_cis.label_alt_id
+  // that enables defining CIS link per conformation.
+  char only_altloc = '\0';
+  double reported_angle = NAN;
+};
+
+struct ModRes {
+  std::string chain_name;
+  ResidueId res_id;
+  std::string parent_comp_id;
+  std::string mod_id;  // non-standard extension used in Refmac
+  std::string details;
+};
 
 // Secondary structure. PDBx/mmCIF stores helices and sheets separately.
 

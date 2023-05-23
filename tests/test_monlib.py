@@ -6,10 +6,10 @@ import gemmi
 
 SO2_FROM_MONOMER = """\
 CRYST1    1.000    1.000    1.000  90.00  90.00  90.00 P 1                      
-HETATM    1  S   SO3  -999      -5.979   0.717  17.353  1.00 20.00           S  
-HETATM    2  O1  SO3  -999      -5.035   1.876  17.325  1.00 20.00           O  
-HETATM    3  O2  SO3  -999      -7.003   1.053  16.315  1.00 20.00           O1-
-HETATM    4  O3  SO3  -999      -5.199  -0.407  16.748  1.00 20.00           O1-
+HETATM    1  S   SO3     1      -5.979   0.717  17.353  1.00 20.00           S  
+HETATM    2  O1  SO3     1      -5.035   1.876  17.325  1.00 20.00           O  
+HETATM    3  O2  SO3     1      -7.003   1.053  16.315  1.00 20.00           O1-
+HETATM    4  O3  SO3     1      -5.199  -0.407  16.748  1.00 20.00           O1-
 """  # noqa: W291 - trailing whitespace
 
 def full_path(filename):
@@ -111,11 +111,16 @@ class TestMonLib(unittest.TestCase):
         st = gemmi.read_structure(full_path('4oz7.pdb'))
         resnames = st[0].get_all_residue_names()
         monlib = gemmi.MonLib()
-        err = monlib.read_monomer_lib(os.environ['CLIBD_MON'], resnames)
-        self.assertEqual(err, "")
+        ok = monlib.read_monomer_lib(os.environ['CLIBD_MON'], resnames)
+        self.assertTrue(ok)
         topo = gemmi.prepare_topology(st, monlib, model_index=0)
-        # currently it doesn't work w/ h_change=gemmi.HydrogenChange.ReAdd
+        topo = gemmi.prepare_topology(st, monlib, model_index=0,
+                                      h_change=gemmi.HydrogenChange.Shift)
         self.assertIsNotNone(topo)
+        # topo = gemmi.prepare_topology(st, monlib, model_index=0,
+        #                              h_change=gemmi.HydrogenChange.ReAdd)
+        # RuntimeError: Placing of hydrogen bonded to A/22W 6/N failed:
+        # Missing angle restraint HN-N-C.
 
 
 if __name__ == '__main__':

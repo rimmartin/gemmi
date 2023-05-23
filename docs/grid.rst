@@ -93,6 +93,16 @@ The advantage of calling ``set_size()`` after a space group was set
 is that this function checks if the size is compatible with the space group
 (a symmetry operation cannot map a node to a point between nodes).
 
+If a unit cell is assigned to the grid (it will be discussed
+:ref:`later <grid_cell>`), you can request the size that gives approximately
+the specified spacing, with one of the possible rounding modes: ``Nearest``,
+``Up`` (denser grid) and ``Down``:
+
+.. doctest::
+
+  >>> grid3.set_unit_cell(gemmi.UnitCell(40, 50, 40, 90, 82.5, 90))
+  >>> grid3.set_size_from_spacing(1.2, gemmi.GridSizeRounding.Nearest)
+
 You can create a copy of a grid with:
 
 .. doctest::
@@ -187,6 +197,8 @@ Python bindings provide the following specializations:
   >>> grid.symmetrize_abs_max()  # value corresponding to max(|x|)
   >>> grid2.symmetrize_sum()     # sum symmetry-equivalent nodes
 
+.. _grid_cell:
+
 Unit cell
 ---------
 
@@ -195,7 +207,7 @@ enable conversion between coordinates and grid points.
 
 The unit cell should be set using ``Grid<T>::set_unit_cell()``,
 which in addition to setting ``unit_cell`` sets also ``spacing``,
-the spacing between grid points that is precalculated for efficiency.
+the spacing between grid planes that is precalculated for efficiency.
 
 .. doctest::
 
@@ -574,6 +586,29 @@ with the model masked out. In this example we do the latter.
   >>> blobs[0].peak_pos
   <gemmi.Position(12.307, 0, 0)>
 
+In addition to the blob coordinates, it can be useful to know what is
+the nearest chain, residue and atom. Here is a quick recipe how to
+find it out with the help of :ref:`NeighborSearch <neighbor_search>`:
+
+.. doctest::
+
+  >>> pos = blobs[0].peak_pos
+  >>> ns = gemmi.NeighborSearch(st[0], st.cell, 8).populate(include_h=False)
+  >>> mark = ns.find_nearest_atom(pos)
+  >>> mark.to_cra(st[0])
+  <gemmi.CRA A/GLN 303/O>
+  >>> # To calculate distance from the atom, we need to account for the periodicity
+  >>> # of crystal. mark.pos is atom.pos transformed by a symmetry op, but we may need
+  >>> # to add a multiplicity of the unit cell vectors before calculating the distance.
+  >>> st.cell.find_nearest_pbc_image(pos, mark.pos, 0)
+  <gemmi.NearestImage 1_554 in distance 3.51>
+  >>> # You may also want to find a symmetry image of the blob that is near
+  >>> # the original molecule.
+  >>> atom_pos = mark.to_cra(st[0]).atom.pos
+  >>> st.cell.find_nearest_pbc_position(atom_pos, pos, mark.image_idx, inverse=True)
+  <gemmi.Position(12.8665, -2.3885, 0)>
+  >>> _.dist(atom_pos)
+  3.511341999194701
 
 Flood fill
 ----------
@@ -603,7 +638,7 @@ We could use multiple seeds to obtain a single mask for all blobs together.
 To find area with values below a certain value,
 run flood_fill_above() with optional argument ``negate=True``.
 
-Here are a few characteristics of the mask that we can easily show:
+Here we print a few characteristics of the mask:
 
 .. doctest::
 
